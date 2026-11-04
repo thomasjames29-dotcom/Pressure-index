@@ -1,17 +1,36 @@
 # Pressure Index
 
-A small static live-football dashboard that fetches API-Football live fixtures and fixture statistics, then ranks matches by a transparent attacking-pressure heuristic.
+A static HTML/CSS/JavaScript live-football dashboard with a Cloudflare Pages Function proxy. The proxy keeps the API-Football credential on the server and serves live fixtures and available match statistics to the table.
 
-## Run locally
+## Deploy as a real web app with Cloudflare Pages
 
-Serve the repository with any static web server (for example `python3 -m http.server 8000`) and open `http://localhost:8000`. Enter an API-Football key in the page to connect. The key is held in JavaScript memory only; it is not written to local storage, the URL, or this repository. Disconnect clears it.
+1. **Rotate the API key you shared in chat** in your API-Football account before deployment. Treat that key as exposed; do not reuse it.
+2. Push this repository to GitHub, then in Cloudflare choose **Workers & Pages → Create application → Pages → Connect to Git** and select `thomasjames29-dotcom/Pressure-index`.
+3. Set the build command to no command (or `exit 0`) and the build output directory to `/`. The site files are at the repository root; the `functions/` directory is automatically deployed by Cloudflare Pages.
+4. In the Pages project settings, add `APIFOOTBALL_KEY` as an encrypted secret/environment variable for Production (and Preview if required). Paste the rotated key there—not into GitHub, HTML, or JavaScript. Redeploy after adding it.
+5. Open the Cloudflare Pages URL and verify that the live connection reports success. The dashboard calls its same-origin `/api/live` function, which calls API-Football from the server.
 
-## Deploying publicly
+This repository change prepares the app for deployment, but does not publish it to Cloudflare: deployment requires signing into your Cloudflare account and authorizing the GitHub integration. Once connected, pushes to the configured production branch deploy automatically.
 
-The browser must send the API key to API-Football, so a key entered in the page can be inspected by the person using that browser and may be exposed to browser extensions or network tooling. Do not hard-code a real key in `app.js`, HTML, or a public GitHub repository. For a public audience, add a small backend/serverless proxy, store the API key in a server-side environment secret, and have the frontend call that proxy. Restrict the key in your API provider account if available.
+## Local development
 
-## Data and score
+Use the Cloudflare Pages dev server so the `/api/live` function is available. Install Node.js and Wrangler, set the secret locally without committing it, then run:
 
-The app calls `GET /fixtures?live=all`, then `GET /fixtures/statistics?fixture={id}` for each live fixture. It refreshes once per minute and displays API-returned live data. The pressure score uses available total shots, shots on target, corners, dangerous attacks, and a deliberately small possession contribution, with cumulative stats scaled by elapsed match time. Missing statistics are omitted from the calculation. The score is a descriptive heuristic—not a probability of a goal or a guarantee of prediction accuracy. API request consumption scales with the number of live matches because statistics are requested per fixture.
+```sh
+npm install --global wrangler
+npx wrangler pages dev . --compatibility-date=2025-01-01
+```
+
+Set `APIFOOTBALL_KEY` in a local `.dev.vars` file before running the dev server. Never commit `.dev.vars`; it is intentionally not included in this repository. For example:
+
+```text
+APIFOOTBALL_KEY=your_rotated_api_key
+```
+
+## Live data and pressure score
+
+The function requests `GET /fixtures?live=all`, then fetches each fixture's statistics with a concurrency limit of four. Successful aggregate responses are cached at the Cloudflare edge for 30 seconds; the browser refreshes once per minute. API consumption depends on the number of concurrent live fixtures and your API-Football plan. Monitor your plan quota, and use Cloudflare rate limiting or access controls if you need to restrict public traffic.
+
+The 0–100 score is an explicitly heuristic ranking based on available total shots, shots on target, corners, dangerous attacks, and a small possession contribution, scaled by elapsed match time. Missing values are excluded. It indicates observed attacking activity; it is not a calibrated probability that a goal will happen. API-Football may omit live statistics for some games.
 
 API documentation: https://www.api-football.com/documentation-v3

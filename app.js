@@ -1,15 +1,9 @@
-const API_BASE = 'https://v3.football.api-sports.io';
 const REFRESH_MS = 60_000;
 const $ = (selector) => document.querySelector(selector);
-const form = $('#keyForm');
-const keyInput = $('#apiKey');
 const body = $('#matchesBody');
 const notice = $('#notice');
 const statusText = $('#statusText');
 const updatedAt = $('#updatedAt');
-const connectButton = $('#connectButton');
-const disconnectButton = $('#disconnectButton');
-let apiKey = '';
 let refreshTimer;
 let refreshing = false;
 
@@ -21,67 +15,27 @@ const statAliases = {
   possession: ['Ball Possession']
 };
 
-form.addEventListener('submit', (event) => {
-  event.preventDefault();
-  apiKey = keyInput.value.trim();
-  if (!apiKey) return;
-  keyInput.value = '';
-  keyInput.placeholder = 'Connected (key not retained)';
-  connectButton.hidden = true;
-  disconnectButton.hidden = false;
-  runRefresh();
-  refreshTimer = window.setInterval(runRefresh, REFRESH_MS);
-});
-
-disconnectButton.addEventListener('click', () => {
-  window.clearInterval(refreshTimer);
-  apiKey = '';
-  connectButton.hidden = false;
-  disconnectButton.hidden = true;
-  statusText.textContent = 'Not connected';
-  updatedAt.textContent = 'Disconnected';
-  $('#matchCount').textContent = '—';
-  renderEmpty('Disconnected', 'Enter your API key to load live fixtures.');
-  notice.textContent = 'Disconnected. Your API key was held only in memory and has been cleared.';
-});
-
-async function apiGet(path) {
-  const response = await fetch(`${API_BASE}${path}`, { headers: { 'x-apisports-key': apiKey } });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || (payload.errors && Object.keys(payload.errors).length)) {
-    const detail = payload.errors ? Object.values(payload.errors).join(' · ') : `${response.status} ${response.statusText}`;
-    throw new Error(detail || 'API request failed');
-  }
-  return payload.response || [];
-}
-
 async function runRefresh() {
-  if (!apiKey || refreshing) return;
+  if (refreshing) return;
   refreshing = true;
   statusText.textContent = 'Updating live games…';
-  notice.textContent = 'Fetching live fixtures and available statistics.';
   try {
-    const fixtures = await apiGet('/fixtures?live=all');
-    const enriched = await Promise.all(fixtures.map(async (fixture) => {
-      try {
-        const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(fixture.fixture.id)}`);
-        return { fixture, stats };
-      } catch (error) {
-        return { fixture, stats: [], statsError: error.message };
-      }
-    }));
-    enriched.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
-    renderMatches(enriched);
+    const response = await fetch('/api/live', { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
+    const matches = Array.isArray(payload.matches) ? payload.matches : [];
+    matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
+    renderMatches(matches);
     const now = new Date();
     statusText.textContent = 'Live data connected';
     updatedAt.textContent = `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
-    notice.textContent = fixtures.length
-      ? `Showing ${fixtures.length} live ${fixtures.length === 1 ? 'fixture' : 'fixtures'}. Match statistics refresh every minute; API request usage depends on the number of live games.`
+    $('#matchCount').textContent = String(matches.length);
+    notice.textContent = matches.length
+      ? `Showing ${matches.length} live ${matches.length === 1 ? 'fixture' : 'fixtures'}. Data is refreshed about once a minute.`
       : 'No live fixtures were returned right now. The table will check again in one minute.';
-    $('#matchCount').textContent = String(fixtures.length);
   } catch (error) {
     statusText.textContent = 'Connection problem';
-    notice.textContent = `Could not load live data: ${error.message}. Check that the key is valid, your plan allows these endpoints, and the API permits browser requests from this site.`;
+    notice.textContent = `Could not load live data: ${error.message}. The service may be starting up, or its API key may need to be configured by the site owner.`;
     if (!body.children.length || body.querySelector('.empty-state')) renderEmpty('Unable to load games', error.message);
   } finally {
     refreshing = false;
@@ -112,32 +66,24 @@ function pressureFor({ fixture, stats }) {
     const corners = getStat(teamStats, statAliases.corners);
     const dangerous = getStat(teamStats, statAliases.dangerous);
     const possession = getStat(teamStats, statAliases.possession);
-    // Per-minute rates soften the late-game advantage of cumulative totals.
     const scale = Math.max(12, minute);
-    const parts = [
-      [shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18],
-      [dangerous, 24, 0.15]
-    ];
+    const parts = [[shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18], [dangerous, 24, 0.15]];
     let weighted = 0;
     let availableWeight = 0;
     for (const [value, expected, weight] of parts) {
       if (value === null) continue;
-      const per90 = value * 90 / scale;
-      weighted += Math.min(1, per90 / expected) * weight;
+      weighted += Math.min(1, (value * 90 / scale) / expected) * weight;
       availableWeight += weight;
     }
     if (possession !== null) {
-      // Possession is intentionally a small contribution: possession alone is not pressure.
       weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
       availableWeight += 0.06;
     }
-    const coverage = availableWeight / 1;
-    const raw = availableWeight ? weighted / availableWeight : 0;
-    const score = Math.round(Math.max(0, Math.min(100, raw * 100)));
-    return { name: teamStats?.team?.name || (index === 0 ? 'Home' : 'Away'), score, coverage };
+    const score = Math.round(Math.max(0, Math.min(100, availableWeight ? weighted / availableWeight * 100 : 0)));
+    return { name: teamStats?.team?.name || (index === 0 ? 'Home' : 'Away'), score };
   });
   sides.sort((a, b) => b.score - a.score);
-  return { sides, score: sides[0]?.score || 0, minute };
+  return { sides, score: sides[0]?.score || 0 };
 }
 
 function pressureClass(score) {
@@ -152,7 +98,7 @@ function renderMatches(items) {
     return;
   }
   body.innerHTML = items.map((item, index) => {
-    const { fixture, stats, statsError } = item;
+    const { fixture, stats = [], statsError } = item;
     const match = fixture.fixture;
     const teams = fixture.teams;
     const goals = fixture.goals;
@@ -177,7 +123,6 @@ function renderMatches(items) {
 
 function signalText(stats) {
   const values = stats.map((team) => ({
-    name: team.team?.name || '',
     shots: getStat(team, statAliases.shots),
     onTarget: getStat(team, statAliases.onTarget),
     corners: getStat(team, statAliases.corners)
@@ -194,3 +139,7 @@ function renderEmpty(title, description) {
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
+
+runRefresh();
+refreshTimer = window.setInterval(runRefresh, REFRESH_MS);
+window.addEventListener('beforeunload', () => window.clearInterval(refreshTimer));
