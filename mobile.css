@@ -97,7 +97,8 @@
 
   .competition,
   .signals,
-  .coverage-note {
+  .coverage-note,
+  .goal-events {
     overflow-wrap: anywhere;
   }
 
@@ -137,6 +138,51 @@
     flex-wrap: wrap;
     gap: 0.25rem 0.65rem;
     min-width: 0;
+  }
+
+  .team-card-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .team-card-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.15rem;
+    height: 1.15rem;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+  }
+
+  .team-card-pill.yellow {
+    background: rgba(248, 215, 106, 0.14);
+    color: var(--yellow);
+  }
+
+  .team-card-pill.red {
+    background: rgba(255, 90, 111, 0.14);
+    color: var(--red);
+  }
+
+  .goal-events {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.45rem;
+    margin: 0.05rem 0 0.15rem 1.9rem;
+    color: var(--muted);
+    font-size: 0.68rem;
+    line-height: 1.25;
+  }
+
+  .goal-events span {
+    white-space: normal;
   }
 
   .table-footer {
