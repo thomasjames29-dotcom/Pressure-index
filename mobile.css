@@ -1,0 +1,124 @@
+/* Mobile fixture cards: keep every table field visible without horizontal scrolling. */
+@media (max-width: 700px) {
+  .table-wrap {
+    overflow-x: visible;
+  }
+
+  .table-wrap table,
+  .table-wrap tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .table-wrap thead {
+    display: none;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.7rem 0.85rem;
+    width: 100%;
+    padding: 1rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td.rank-col {
+    position: absolute;
+    top: 0.85rem;
+    right: 0.9rem;
+    z-index: 1;
+    width: auto;
+    color: var(--muted);
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(2),
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(5),
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(6) {
+    grid-column: 1 / -1;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(2) {
+    padding-right: 2rem;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(3),
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(4) {
+    align-self: center;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(3)::before,
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(4)::before,
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(6)::before {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(3)::before { content: "TIME"; }
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(4)::before { content: "SCORE"; }
+  .table-wrap tbody tr:not(:has(.empty-state)) td:nth-child(6)::before { content: "RISK"; }
+
+  .match-cell,
+  .teams,
+  .team-line,
+  .pressure-cell,
+  .pressure-top {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .team-line {
+    gap: 0.45rem;
+  }
+
+  .team-line span:not(.team-logo) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .team-logo {
+    flex: 0 0 auto;
+  }
+
+  .competition,
+  .signals,
+  .coverage-note {
+    overflow-wrap: anywhere;
+  }
+
+  .pressure-top {
+    gap: 0.5rem;
+  }
+
+  .pressure-top .meter {
+    flex: 1 1 auto;
+    min-width: 2rem;
+  }
+
+  .table-footer {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .table-wrap tbody tr:not(:has(.empty-state)) {
+    padding: 0.85rem 0.7rem;
+  }
+
+  .pressure-top .level {
+    font-size: 0.58rem;
+  }
+}
