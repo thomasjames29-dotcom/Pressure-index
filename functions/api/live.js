@@ -27,12 +27,17 @@ export async function onRequestGet({ request, env }) {
     for (let index = 0; index < batches.length; index += 1) {
       const batch = batches[index];
       const batchMatches = await mapWithConcurrency(batch, STATS_CONCURRENCY, async (fixture) => {
-        try {
-          const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(fixture.fixture.id)}`, env.APIFOOTBALL_KEY);
-          return { fixture, stats };
-        } catch (error) {
-          return { fixture, stats: [], statsError: safeMessage(error) };
-        }
+        const [statsResult, eventsResult] = await Promise.allSettled([
+          apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(fixture.fixture.id)}`, env.APIFOOTBALL_KEY),
+          apiGet(`/fixtures/events?fixture=${encodeURIComponent(fixture.fixture.id)}`, env.APIFOOTBALL_KEY)
+        ]);
+        return {
+          fixture,
+          stats: statsResult.status === 'fulfilled' ? statsResult.value : [],
+          statsError: statsResult.status === 'rejected' ? safeMessage(statsResult.reason) : undefined,
+          events: eventsResult.status === 'fulfilled' ? eventsResult.value : [],
+          eventsError: eventsResult.status === 'rejected' ? safeMessage(eventsResult.reason) : undefined
+        };
       });
       matches.push(...batchMatches);
 
