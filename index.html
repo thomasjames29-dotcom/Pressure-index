@@ -4,7 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#07111e">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Pressure Index">
   <title>Pressure Index — Live Football</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="mask-icon" href="/icon.svg" color="#07111e">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
@@ -48,16 +55,16 @@
     <p id="notice" class="notice" role="status">Connecting to the live match service…</p>
 
     <section class="table-card" aria-label="Live pressure index league table">
-      <div class="table-heading"><div><h2>Live pressure table</h2><p>Ranked by the higher team's pressure score</p></div><div class="auto-refresh"><span class="refresh-icon">↻</span> Auto-refresh · 60 sec</div></div>
+      <div class="table-heading"><div><h2>Live pressure table</h2><p>Ranked by the higher team's pressure score</p></div><div class="auto-refresh"><span class="refresh-icon">↻</span> Auto-refresh</div></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th class="rank-col">#</th><th>MATCH</th><th class="center">TIME</th><th class="center">SCORE</th><th>PRESSURE</th><th class="right">RISK</th></tr></thead>
-          <tbody id="matchesBody"><tr><td colspan="6" class="empty-state"><span class="empty-icon">⌁</span><strong>Connecting to live match service</strong><span>Live fixtures will appear here shortly.</span></td></tr></tbody>
+          <tbody id="matchesBody"><tr><td colspan="6" class="empty-state"><span class="empty-icon">⌁</span><strong>Connecting to live match service</strong><span>Live fixtures will appear here soon.</span></td></tr></tbody>
         </table>
       </div>
-      <div class="table-footer"><span><i class="legend-dot high"></i>High 70–100 <i class="legend-dot medium"></i>Building 40–69 <i class="legend-dot low"></i>Low 0–39</span><span id="quotaText">Scores use available live match statistics</span></div>
+      <div class="table-footer"><span><i class="legend-dot high"></i>High 70–100 <i class="legend-dot medium"></i>Building 40–69 <i class="legend-dot low"></i>Low 0–39</span><span id="quotaText">Checking service status…</span></div>
     </section>
-    <section class="method-note"><strong>How to read this</strong><p>Pressure is a transparent 0–100 heuristic from shots, shots on target, corners, dangerous attacks and possession, adjusted for match minute. It describes attacking activity in the available stats; it is not a calibrated goal-probability forecast. API-Football may not provide every statistic for every fixture. The higher the risk band, the stronger the attacking surge and the greater the probability of an imminent goal.</p></section>
+    <section class="method-note"><strong>How to read this</strong><p>Pressure is a transparent 0–100 heuristic from shots, shots on target, corners, dangerous attacks and possession, adjusted for game time.</p></section>
     <footer>Live data via API-Football <span>•</span> Refreshes about once a minute</footer>
   </main>
 </body>
