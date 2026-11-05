@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pressure Index app icon">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0d1b2a"/>
+      <stop offset="100%" stop-color="#07111e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#67f0bf"/>
+      <stop offset="100%" stop-color="#55b8ff"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="120" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="172" fill="rgba(255,255,255,0.04)"/>
+
+  <path d="M158 370V142h118c63 0 101 43 101 95s-38 95-101 95H216v38h60v44h-58V226h60c27 0 43-18 43-42s-16-42-43-42h-60v228h-58z" fill="#edf7ff"/>
+
+  <circle cx="368" cy="160" r="54" fill="url(#accent)"/>
+  <circle cx="368" cy="160" r="24" fill="#07111e" opacity="0.9"/>
+  <path d="M346 161l18-18 18 18 18-18 12 12-18 18 18 18-12 12-18-18-18 18-12-12 18-18-18-18z" fill="#07111e" opacity="0.75"/>
+
+  <path d="M126 381h260" stroke="url(#accent)" stroke-width="18" stroke-linecap="round" opacity="0.95"/>
+  <path d="M146 332h88" stroke="rgba(255,255,255,0.72)" stroke-width="14" stroke-linecap="round"/>
+</svg>

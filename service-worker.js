@@ -1,18 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pressure Index app icon">
-  <defs>
-    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#0d1b2a" />
-      <stop offset="100%" stop-color="#07111e" />
-    </linearGradient>
-    <linearGradient id="pulse" x1="0" x2="1" y1="0" y2="0">
-      <stop offset="0%" stop-color="#7fffd4" />
-      <stop offset="100%" stop-color="#52b6ff" />
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <circle cx="256" cy="256" r="180" fill="rgba(255,255,255,0.04)"/>
-  <path d="M153 359V153h122c59 0 94 39 94 94s-35 94-94 94H214v-50h55c27 0 42-18 42-44s-15-44-42-44h-78v192h-51zm118-36h40c25 0 40-16 40-38s-15-38-40-38h-40v76z" fill="#e8f5ff"/>
-  <rect x="318" y="126" width="76" height="76" rx="20" fill="url(#pulse)"/>
-  <path d="M336 164c12-12 30-12 42 0l12 12 22-26 20 20-36 42-32-32-28 28-20-20 20-20 20 20z" fill="#07111e" opacity="0.9"/>
-  <path d="M132 375h260" stroke="url(#pulse)" stroke-width="18" stroke-linecap="round" opacity="0.9"/>
-</svg>
+const CACHE_NAME = 'pressure-index-v1';
+const APP_SHELL = [
+  '/',
+  '/index.html',
+  '/styles.css',
+  '/app.js',
+  '/icon.svg',
+  '/manifest.webmanifest'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+    )).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
+      if (cached) return cached;
+
+      return fetch(event.request).then((response) => {
+        const copy = response.clone();
+        const isAppShell = event.request.url.startsWith(self.location.origin) && (
+          event.request.url.includes('/index.html') ||
+          event.request.url.includes('/styles.css') ||
+          event.request.url.includes('/app.js') ||
+          event.request.url.includes('/icon.svg') ||
+          event.request.url.includes('/manifest.webmanifest') ||
+          new URL(event.request.url).pathname === '/'
+        );
+
+        if (response.ok && isAppShell) {
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+
+        return response;
+      }).catch(() => cached || Response.error());
+    })
+  );
+});
