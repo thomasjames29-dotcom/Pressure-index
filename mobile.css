@@ -1,13 +1,15 @@
 /* Mobile fixture cards: keep every table field visible without horizontal scrolling. */
 @media (max-width: 700px) {
   .table-wrap {
-    overflow-x: visible;
+    min-width: 0;
+    overflow-x: hidden;
   }
 
   .table-wrap table,
   .table-wrap tbody {
     display: block;
     width: 100%;
+    min-width: 0;
   }
 
   .table-wrap thead {
@@ -20,6 +22,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.7rem 0.85rem;
     width: 100%;
+    min-width: 0;
     padding: 1rem;
     border-bottom: 1px solid var(--line);
   }
@@ -98,13 +101,42 @@
     overflow-wrap: anywhere;
   }
 
+  /* Keep the pressure meter inside its card on narrow screens. */
   .pressure-top {
-    gap: 0.5rem;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.35rem 0.65rem;
+  }
+
+  .pressure-top > strong {
+    grid-column: 1;
+    grid-row: 1;
   }
 
   .pressure-top .meter {
-    flex: 1 1 auto;
-    min-width: 2rem;
+    grid-column: 2;
+    grid-row: 1;
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .pressure-top .level {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .pressure-team {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.65rem;
+    min-width: 0;
   }
 
   .table-footer {
