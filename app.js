@@ -57,6 +57,13 @@ function getStat(team, names) {
   return found ? numberValue(found.value) : null;
 }
 
+function getTeamEvents(teamId, events, predicate) {
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    const sameTeam = String(event.team?.id) === String(teamId);
+    return sameTeam && predicate(event);
+  });
+}
+
 function pressureFor({ fixture, stats }) {
   const minute = Number(fixture.fixture?.status?.elapsed) || 0;
   const sides = [0, 1].map((index) => {
@@ -92,13 +99,41 @@ function pressureClass(score) {
   return 'low';
 }
 
+function formatGoalEvent(event) {
+  const elapsed = Number(event.time?.elapsed);
+  const extra = event.time?.extra ? `+${event.time.extra}` : '';
+  const minute = Number.isFinite(elapsed) ? `${elapsed}${extra}'` : '—';
+  const player = event.player?.name || 'Goal';
+  const text = event.detail || '';
+  const suffix = /own goal/i.test(text) ? ' (OG)' : /penalty/i.test(text) ? ' (pen)' : '';
+  return `${minute} ${player}${suffix}`;
+}
+
+function teamGoalMarkup(teamId, events) {
+  const goals = getTeamEvents(teamId, events, (event) => event.type === 'Goal' || /goal/i.test(event.type || '')).slice(0, 3);
+  if (!goals.length) return '';
+  return `<div class="goal-events">${goals.map((goal) => `<span>⚽ ${escapeHtml(formatGoalEvent(goal))}</span>`).join('')}</div>`;
+}
+
+function teamCardMarkup(teamId, events) {
+  const yellowCards = getTeamEvents(teamId, events, (event) => {
+    const text = `${event.type || ''} ${event.detail || ''}`;
+    return /card/i.test(text) && /yellow/i.test(text);
+  }).length;
+  const redCards = getTeamEvents(teamId, events, (event) => {
+    const text = `${event.type || ''} ${event.detail || ''}`;
+    return /card/i.test(text) && /red/i.test(text);
+  }).length;
+  return `<span class="team-card-badges" aria-label="${yellowCards} yellow cards and ${redCards} red cards"><span class="team-card-pill yellow">${yellowCards}</span><span class="team-card-pill red">${redCards}</span></span>`;
+}
+
 function renderMatches(items) {
   if (!items.length) {
     renderEmpty('No live games right now', 'Live fixtures will appear here as soon as matches are underway.');
     return;
   }
   body.innerHTML = items.map((item, index) => {
-    const { fixture, stats = [], statsError } = item;
+    const { fixture, stats = [], statsError, events = [] } = item;
     const match = fixture.fixture;
     const teams = fixture.teams;
     const goals = fixture.goals;
@@ -112,7 +147,7 @@ function renderMatches(items) {
     const coverageNote = statsError ? 'Statistics unavailable' : (!stats.length ? 'Waiting for statistics' : '');
     return `<tr>
       <td class="rank-col rank">${String(index + 1).padStart(2, '0')}</td>
-      <td><div class="match-cell"><div class="teams"><div class="team-line">${logo(teams.home)}<span>${escapeHtml(teams.home.name)}</span><b>${goals.home ?? '–'}</b></div><div class="team-line">${logo(teams.away)}<span>${escapeHtml(teams.away.name)}</span><b>${goals.away ?? '–'}</b></div></div><div class="competition">${escapeHtml(fixture.league?.name || '')} <span>·</span> ${escapeHtml(fixture.league?.country || '')}</div></div></td>
+      <td><div class="match-cell"><div class="teams"><div class="team-line">${logo(teams.home)}<span>${escapeHtml(teams.home.name)}</span><b>${goals.home ?? '–'}</b>${teamCardMarkup(teams.home.id, events)}</div>${teamGoalMarkup(teams.home.id, events)}<div class="team-line">${logo(teams.away)}<span>${escapeHtml(teams.away.name)}</span><b>${goals.away ?? '–'}</b>${teamCardMarkup(teams.away.id, events)}</div>${teamGoalMarkup(teams.away.id, events)}</div><div class="competition">${escapeHtml(fixture.league?.name || '')} <span>·</span> ${escapeHtml(fixture.league?.country || '')}</div></div></td>
       <td class="center minute">${escapeHtml(String(time))}</td>
       <td class="center score-cell">${goals.home ?? '–'} <span>:</span> ${goals.away ?? '–'}</td>
       <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressure.score}</strong><span class="meter"><i class="${cls}" style="width:${pressure.score}%"></i></span><span class="level ${cls}">${cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div><div class="pressure-team">${escapeHtml(top?.name || 'No data')}<span>${second?.score ?? 0} away</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
