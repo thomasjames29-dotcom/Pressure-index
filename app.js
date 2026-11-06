@@ -1,7 +1,10 @@
 const REFRESH_MS = 60_000;
-const PRESSURE_HISTORY_WINDOW_MINUTES = 12;
-const PRESSURE_HISTORY_WINDOW_MS = PRESSURE_HISTORY_WINDOW_MINUTES * 60 * 1000;
+const PRESSURE_HISTORY_MAX_MINUTES = 15;
+const PRESSURE_HISTORY_MAX_MS = PRESSURE_HISTORY_MAX_MINUTES * 60 * 1000;
+const PRESSURE_WINDOW_OPTIONS = [10, 12, 15];
 const pressureHistory = new Map();
+let currentMatches = [];
+let selectedPressureWindowMinutes = 12;
 const $ = (selector) => document.querySelector(selector);
 const body = $('#matchesBody');
 const notice = $('#notice');
@@ -18,6 +21,13 @@ const statAliases = {
   possession: ['Ball Possession']
 };
 
+function setPressureWindowMinutes(minutes) {
+  selectedPressureWindowMinutes = minutes;
+  if (currentMatches.length) {
+    renderMatches(currentMatches);
+  }
+}
+
 async function runRefresh() {
   if (refreshing) return;
   refreshing = true;
@@ -29,6 +39,7 @@ async function runRefresh() {
 
     const matches = Array.isArray(payload.matches) ? payload.matches : [];
     matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
+    currentMatches = matches;
     matches.forEach(updatePressureHistory);
     renderMatches(matches);
 
@@ -113,7 +124,7 @@ function updatePressureHistory(item) {
   };
 
   const nextHistory = [...history, sample];
-  const cutoff = Date.now() - PRESSURE_HISTORY_WINDOW_MS;
+  const cutoff = Date.now() - PRESSURE_HISTORY_MAX_MS;
   const trimmed = nextHistory.filter((entry) => entry.timestamp >= cutoff);
   pressureHistory.set(key, trimmed.length ? trimmed : nextHistory.slice(-1));
 }
@@ -121,22 +132,24 @@ function updatePressureHistory(item) {
 function buildPressureTrend(item) {
   const key = pressureHistoryKey(item);
   const history = pressureHistory.get(key) || [];
-  if (!history.length) return '';
+  const cutoff = Date.now() - (selectedPressureWindowMinutes * 60 * 1000);
+  const visibleHistory = history.filter((entry) => entry.timestamp >= cutoff);
+  if (!visibleHistory.length) return '';
 
   const width = 220;
   const height = 82;
   const padding = 10;
-  const xStep = history.length > 1 ? (width - padding * 2) / (history.length - 1) : 0;
+  const xStep = visibleHistory.length > 1 ? (width - padding * 2) / (visibleHistory.length - 1) : 0;
   const yFor = (score) => height - padding - ((score / 100) * (height - padding * 2));
 
-  const linePath = (seriesKey) => history.map((point, index) => {
+  const linePath = (seriesKey) => visibleHistory.map((point, index) => {
     const x = padding + (index * xStep);
     const y = yFor(point[seriesKey]);
     return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
   }).join(' ');
 
-  const lastPoint = history[history.length - 1] || { home: 0, away: 0 };
-  const homeX = padding + (history.length - 1) * xStep;
+  const lastPoint = visibleHistory[visibleHistory.length - 1] || { home: 0, away: 0 };
+  const homeX = padding + (visibleHistory.length - 1) * xStep;
   const awayX = homeX;
   const homeY = yFor(lastPoint.home);
   const awayY = yFor(lastPoint.away);
@@ -144,15 +157,29 @@ function buildPressureTrend(item) {
   return `
     <div class="pressure-trend" aria-label="Rolling pressure trend chart">
       <div class="chart-header">
-        <span>${PRESSURE_HISTORY_WINDOW_MINUTES}m rolling</span>
-        <span><i class="swatch home"></i>Home</span>
-        <span><i class="swatch away"></i>Away</span>
+        <span class="chart-label">Pressure</span>
+        <div class="chart-window-controls">
+          ${PRESSURE_WINDOW_OPTIONS.map((minutes) => `
+            <button
+              type="button"
+              class="chart-window-button ${minutes === selectedPressureWindowMinutes ? 'active' : ''}"
+              data-window-minutes="${minutes}"
+              aria-label="Set pressure window to ${minutes} minutes"
+            >${minutes}m</button>
+          `).join('')}
+        </div>
+        <span class="team-key"><i class="swatch home"></i>Home</span>
+        <span class="team-key"><i class="swatch away"></i>Away</span>
       </div>
       <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Pressure score trend for both teams">
         <path class="trend-line home" d="${linePath('home')}"></path>
         <path class="trend-line away" d="${linePath('away')}"></path>
-        <circle class="trend-point home" cx="${homeX}" cy="${homeY}" r="3"></circle>
-        <circle class="trend-point away" cx="${awayX}" cy="${awayY}" r="3"></circle>
+        <circle class="trend-point home" cx="${homeX}" cy="${homeY}" r="4">
+          <title>Home: ${lastPoint.home}</title>
+        </circle>
+        <circle class="trend-point away" cx="${awayX}" cy="${awayY}" r="4">
+          <title>Away: ${lastPoint.away}</title>
+        </circle>
       </svg>
     </div>
   `;
@@ -253,6 +280,15 @@ function renderEmpty(title, description) {
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-window-minutes]');
+  if (!button) return;
+  const minutes = Number(button.dataset.windowMinutes);
+  if (Number.isFinite(minutes)) {
+    setPressureWindowMinutes(minutes);
+  }
+});
 
 runRefresh();
 refreshTimer = window.setInterval(runRefresh, REFRESH_MS);
