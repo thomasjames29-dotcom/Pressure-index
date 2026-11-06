@@ -157,7 +157,6 @@ function updatePressureHistory(item) {
   const cutoff = now - PRESSURE_HISTORY_MAX_MINUTES * 60 * 1000;
   const retained = history.filter((entry) => entry.timestamp >= cutoff);
   const last = retained[retained.length - 1];
-  // Avoid adding multiple identical samples when a refresh is manually retried quickly.
   if (last && now - last.timestamp < 5_000) retained[retained.length - 1] = sample;
   else retained.push(sample);
   pressureHistory.set(key, retained);
