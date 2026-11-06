@@ -1,4 +1,7 @@
 const REFRESH_MS = 60_000;
+const PRESSURE_HISTORY_WINDOW_MINUTES = 12;
+const PRESSURE_HISTORY_WINDOW_MS = PRESSURE_HISTORY_WINDOW_MINUTES * 60 * 1000;
+const pressureHistory = new Map();
 const $ = (selector) => document.querySelector(selector);
 const body = $('#matchesBody');
 const notice = $('#notice');
@@ -23,9 +26,12 @@ async function runRefresh() {
     const response = await fetch('/api/live', { headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
+
     const matches = Array.isArray(payload.matches) ? payload.matches : [];
     matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
+    matches.forEach(updatePressureHistory);
     renderMatches(matches);
+
     const now = new Date();
     statusText.textContent = 'Live data connected';
     updatedAt.textContent = `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
@@ -64,29 +70,99 @@ function getTeamEvents(teamId, events, predicate) {
   });
 }
 
+function teamPressureScore(teamStats, minute) {
+  const shots = getStat(teamStats, statAliases.shots);
+  const onTarget = getStat(teamStats, statAliases.onTarget);
+  const corners = getStat(teamStats, statAliases.corners);
+  const dangerous = getStat(teamStats, statAliases.dangerous);
+  const possession = getStat(teamStats, statAliases.possession);
+  const scale = Math.max(12, minute);
+  const parts = [[shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18], [dangerous, 24, 0.15]];
+  let weighted = 0;
+  let availableWeight = 0;
+
+  for (const [value, expected, weight] of parts) {
+    if (value === null) continue;
+    weighted += Math.min(1, (value * 90 / scale) / expected) * weight;
+    availableWeight += weight;
+  }
+
+  if (possession !== null) {
+    weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
+    availableWeight += 0.06;
+  }
+
+  return Math.round(Math.max(0, Math.min(100, availableWeight ? weighted / availableWeight * 100 : 0)));
+}
+
+function pressureHistoryKey(item) {
+  const match = item?.fixture?.fixture || {};
+  const teams = item?.fixture?.teams || {};
+  const id = match.id || `${teams.home?.id ?? 'home'}-${teams.away?.id ?? 'away'}-${match.date || 'fixture'}`;
+  return String(id);
+}
+
+function updatePressureHistory(item) {
+  const key = pressureHistoryKey(item);
+  const history = pressureHistory.get(key) || [];
+  const minute = Number(item?.fixture?.fixture?.status?.elapsed) || 0;
+  const sample = {
+    timestamp: Date.now(),
+    home: teamPressureScore(item?.stats?.[0], minute),
+    away: teamPressureScore(item?.stats?.[1], minute)
+  };
+
+  const nextHistory = [...history, sample];
+  const cutoff = Date.now() - PRESSURE_HISTORY_WINDOW_MS;
+  const trimmed = nextHistory.filter((entry) => entry.timestamp >= cutoff);
+  pressureHistory.set(key, trimmed.length ? trimmed : nextHistory.slice(-1));
+}
+
+function buildPressureTrend(item) {
+  const key = pressureHistoryKey(item);
+  const history = pressureHistory.get(key) || [];
+  if (!history.length) return '';
+
+  const width = 220;
+  const height = 82;
+  const padding = 10;
+  const xStep = history.length > 1 ? (width - padding * 2) / (history.length - 1) : 0;
+  const yFor = (score) => height - padding - ((score / 100) * (height - padding * 2));
+
+  const linePath = (seriesKey) => history.map((point, index) => {
+    const x = padding + (index * xStep);
+    const y = yFor(point[seriesKey]);
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+  }).join(' ');
+
+  const lastPoint = history[history.length - 1] || { home: 0, away: 0 };
+  const homeX = padding + (history.length - 1) * xStep;
+  const awayX = homeX;
+  const homeY = yFor(lastPoint.home);
+  const awayY = yFor(lastPoint.away);
+
+  return `
+    <div class="pressure-trend" aria-label="Rolling pressure trend chart">
+      <div class="chart-header">
+        <span>${PRESSURE_HISTORY_WINDOW_MINUTES}m rolling</span>
+        <span><i class="swatch home"></i>Home</span>
+        <span><i class="swatch away"></i>Away</span>
+      </div>
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Pressure score trend for both teams">
+        <path class="trend-line home" d="${linePath('home')}"></path>
+        <path class="trend-line away" d="${linePath('away')}"></path>
+        <circle class="trend-point home" cx="${homeX}" cy="${homeY}" r="3"></circle>
+        <circle class="trend-point away" cx="${awayX}" cy="${awayY}" r="3"></circle>
+      </svg>
+    </div>
+  `;
+}
+
 function pressureFor({ fixture, stats }) {
   const minute = Number(fixture.fixture?.status?.elapsed) || 0;
   const sides = [0, 1].map((index) => {
     const teamStats = stats[index];
-    const shots = getStat(teamStats, statAliases.shots);
-    const onTarget = getStat(teamStats, statAliases.onTarget);
-    const corners = getStat(teamStats, statAliases.corners);
-    const dangerous = getStat(teamStats, statAliases.dangerous);
-    const possession = getStat(teamStats, statAliases.possession);
-    const scale = Math.max(12, minute);
-    const parts = [[shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18], [dangerous, 24, 0.15]];
-    let weighted = 0;
-    let availableWeight = 0;
-    for (const [value, expected, weight] of parts) {
-      if (value === null) continue;
-      weighted += Math.min(1, (value * 90 / scale) / expected) * weight;
-      availableWeight += weight;
-    }
-    if (possession !== null) {
-      weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
-      availableWeight += 0.06;
-    }
-    const score = Math.round(Math.max(0, Math.min(100, availableWeight ? weighted / availableWeight * 100 : 0)));
+    const score = teamPressureScore(teamStats, minute);
     return { name: teamStats?.team?.name || (index === 0 ? 'Home' : 'Away'), score };
   });
   sides.sort((a, b) => b.score - a.score);
@@ -132,6 +208,7 @@ function renderMatches(items) {
     renderEmpty('No live games right now', 'Live fixtures will appear here as soon as matches are underway.');
     return;
   }
+
   body.innerHTML = items.map((item, index) => {
     const { fixture, stats = [], statsError, events = [] } = item;
     const match = fixture.fixture;
@@ -145,12 +222,14 @@ function renderMatches(items) {
     const signals = stats.length ? signalText(stats) : 'Stats pending';
     const logo = (team) => team.logo ? `<img class="team-logo" src="${escapeHtml(team.logo)}" alt="" loading="lazy">` : '<span class="team-logo fallback">●</span>';
     const coverageNote = statsError ? 'Statistics unavailable' : (!stats.length ? 'Waiting for statistics' : '');
+    const trend = buildPressureTrend(item);
+
     return `<tr>
       <td class="rank-col rank">${String(index + 1).padStart(2, '0')}</td>
       <td><div class="match-cell"><div class="teams"><div class="team-line">${logo(teams.home)}<span>${escapeHtml(teams.home.name)}</span><b>${goals.home ?? '–'}</b>${teamCardMarkup(teams.home.id, events)}</div>${teamGoalMarkup(teams.home.id, events)}<div class="team-line">${logo(teams.away)}<span>${escapeHtml(teams.away.name)}</span><b>${goals.away ?? '–'}</b>${teamCardMarkup(teams.away.id, events)}</div>${teamGoalMarkup(teams.away.id, events)}</div><div class="competition">${escapeHtml(fixture.league?.name || '')} <span>·</span> ${escapeHtml(fixture.league?.country || '')}</div></div></td>
       <td class="center minute">${escapeHtml(String(time))}</td>
       <td class="center score-cell">${goals.home ?? '–'} <span>:</span> ${goals.away ?? '–'}</td>
-      <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressure.score}</strong><span class="meter"><i class="${cls}" style="width:${pressure.score}%"></i></span><span class="level ${cls}">${cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div><div class="pressure-team">${escapeHtml(top?.name || 'No data')}<span>${second?.score ?? 0} away</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
+      <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressure.score}</strong><span class="meter"><i class="${cls}" style="width:${pressure.score}%"></i></span><span class="level ${cls}">${cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div>${trend}<div class="pressure-team">${escapeHtml(top?.name || 'No data')}<span>${second?.score ?? 0} away</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
       <td class="right signals">${escapeHtml(signals)}</td>
     </tr>`;
   }).join('');
