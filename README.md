@@ -33,4 +33,7 @@ The function requests `GET /fixtures?live=all`, then fetches each fixture's stat
 
 The 0–100 score is an explicitly heuristic ranking based on available total shots, shots on target, corners, dangerous attacks, and a small possession contribution, scaled by elapsed match time. Missing values are excluded. It indicates observed attacking activity; it is not a calibrated probability that a goal will happen. API-Football may omit live statistics for some games.
 
+The live trend chart uses a rolling 12-minute window, refreshed on every live scan, with home and away pressure plotted on the same line graph to highlight rising or falling momentum.
+
 API documentation: https://www.api-football.com/documentation-v3
+

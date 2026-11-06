@@ -1,72 +1,255 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#07111e">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Pressure Index">
-  <title>Pressure Index — Live Football</title>
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="mask-icon" href="/icon.svg" color="#07111e">
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="mobile.css">
-  <script src="app.js" defer></script>
-</head>
-<body>
-  <header class="topbar">
-    <a class="brand" href="#" aria-label="Pressure Index home"><span class="brand-mark">P</span><span>PRESSURE<span class="brand-muted"> INDEX</span></span></a>
-    <div class="top-status"><span class="live-dot"></span><span id="statusText">Connecting…</span><span class="status-divider">·</span><span id="updatedAt">Loading live data</span></div>
-  </header>
+const REFRESH_MS = 60_000;
+const PRESSURE_HISTORY_WINDOW_MINUTES = 12;
+const PRESSURE_HISTORY_WINDOW_MS = PRESSURE_HISTORY_WINDOW_MINUTES * 60 * 1000;
+const pressureHistory = new Map();
+const $ = (selector) => document.querySelector(selector);
+const body = $('#matchesBody');
+const notice = $('#notice');
+const statusText = $('#statusText');
+const updatedAt = $('#updatedAt');
+let refreshTimer;
+let refreshing = false;
 
-  <main class="page">
-    <section class="intro">
-      <div>
-        <p class="eyebrow">LIVE MATCH CENTRE</p>
-        <h1>Feel the <span>momentum.</span></h1>
-        <p class="lede">Live matches ranked by attacking pressure. A signal to watch—not a promise that a goal is coming.</p>
+const statAliases = {
+  shots: ['Total Shots', 'Shots'],
+  onTarget: ['Shots on Goal', 'Shots on Target'],
+  corners: ['Corner Kicks', 'Corners'],
+  dangerous: ['Dangerous Attacks'],
+  possession: ['Ball Possession']
+};
+
+async function runRefresh() {
+  if (refreshing) return;
+  refreshing = true;
+  statusText.textContent = 'Updating live games…';
+  try {
+    const response = await fetch('/api/live', { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
+    const matches = Array.isArray(payload.matches) ? payload.matches : [];
+    matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
+    matches.forEach(updatePressureHistory);
+    renderMatches(matches);
+    const now = new Date();
+    statusText.textContent = 'Live data connected';
+    updatedAt.textContent = `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+    $('#matchCount').textContent = String(matches.length);
+    notice.textContent = matches.length
+      ? `Showing ${matches.length} live ${matches.length === 1 ? 'fixture' : 'fixtures'}. Data is refreshed about once a minute.`
+      : 'No live fixtures were returned right now. The table will check again in one minute.';
+  } catch (error) {
+    statusText.textContent = 'Connection problem';
+    notice.textContent = `Could not load live data: ${error.message}. The service may be starting up, or its API key may need to be configured by the site owner.`;
+    if (!body.children.length || body.querySelector('.empty-state')) renderEmpty('Unable to load games', error.message);
+  } finally {
+    refreshing = false;
+  }
+}
+
+function numberValue(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value.replace('%', '').replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getStat(team, names) {
+  const values = team?.statistics || [];
+  const found = values.find((item) => names.includes(item.type));
+  return found ? numberValue(found.value) : null;
+}
+
+function getTeamEvents(teamId, events, predicate) {
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    const sameTeam = String(event.team?.id) === String(teamId);
+    return sameTeam && predicate(event);
+  });
+}
+
+function pressureHistoryKey(item) {
+  const fixtureWrapper = item?.fixture || {};
+  const fixtureMeta = fixtureWrapper.fixture || {};
+  const teams = fixtureWrapper.teams || {};
+  const id = fixtureMeta.id || `${teams.home?.id ?? 'home'}-${teams.away?.id ?? 'away'}-${fixtureMeta.date ?? 'fixture'}`;
+  return String(id);
+}
+
+function updatePressureHistory(item) {
+  const key = pressureHistoryKey(item);
+  const { sides } = pressureFor(item);
+  const history = pressureHistory.get(key) || [];
+  const now = Date.now();
+  const sample = {
+    timestamp: now,
+    home: Number(sides[0]?.score ?? 0),
+    away: Number(sides[1]?.score ?? 0)
+  };
+
+  const nextHistory = [...history, sample];
+  const cutoff = now - PRESSURE_HISTORY_WINDOW_MS;
+  const trimmed = nextHistory.filter((entry) => entry.timestamp >= cutoff);
+  pressureHistory.set(key, trimmed.length ? trimmed : nextHistory.slice(-1));
+}
+
+function buildPressureTrend(item) {
+  const key = pressureHistoryKey(item);
+  const history = pressureHistory.get(key) || [];
+  if (!history.length) return '';
+
+  const width = 220;
+  const height = 82;
+  const padding = 10;
+  const min = 0;
+  const max = 100;
+  const xStep = history.length === 1 ? 0 : (width - padding * 2) / (history.length - 1);
+  const yFor = (score) => height - padding - ((score - min) / (max - min || 1)) * (height - padding * 2);
+
+  const linePath = (seriesKey) => history.map((point, index) => {
+    const x = padding + (index * xStep);
+    const y = yFor(point[seriesKey]);
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+  }).join(' ');
+
+  const homePath = linePath('home');
+  const awayPath = linePath('away');
+  const lastPoint = history[history.length - 1] || { home: 0, away: 0 };
+  const homeX = padding + (history.length - 1) * xStep;
+  const awayX = homeX;
+  const homeY = yFor(lastPoint.home);
+  const awayY = yFor(lastPoint.away);
+
+  return `
+    <div class="pressure-trend" aria-label="Rolling pressure trend chart">
+      <div class="chart-header">
+        <span>${PRESSURE_HISTORY_WINDOW_MINUTES}m rolling</span>
+        <span><i class="swatch home"></i>Home</span>
+        <span><i class="swatch away"></i>Away</span>
       </div>
-      <div class="live-count"><span id="matchCount">—</span><small>LIVE MATCHES</small></div>
-    </section>
-
-    <section class="key-panel" aria-label="Secure API connection">
-      <div class="key-copy"><strong>Live data connection</strong><span>API credentials are kept server-side and are never sent to your browser.</span></div>
-      <span class="connection-label"><i class="live-dot"></i> Secure server connection</span>
-    </section>
-
-    <div class="filters" aria-label="League filters">
-      <label>
-        <span>League</span>
-        <select id="leagueFilter">
-          <option value="all">All leagues</option>
-        </select>
-      </label>
-      <label>
-        <span>Country</span>
-        <select id="countryFilter">
-          <option value="all">All countries</option>
-        </select>
-      </label>
-      <button id="resetFilters" class="ghost-button" type="button">Reset</button>
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Pressure score trend for both teams">
+        <path class="trend-line home" d="${homePath}"></path>
+        <path class="trend-line away" d="${awayPath}"></path>
+        <circle class="trend-point home" cx="${homeX}" cy="${homeY}" r="3"></circle>
+        <circle class="trend-point away" cx="${awayX}" cy="${awayY}" r="3"></circle>
+      </svg>
     </div>
+  `;
+}
 
-    <p id="notice" class="notice" role="status">Connecting to the live match service…</p>
+function pressureFor({ fixture, stats }) {
+  const minute = Number(fixture.fixture?.status?.elapsed) || 0;
+  const sides = [0, 1].map((index) => {
+    const teamStats = stats[index];
+    const shots = getStat(teamStats, statAliases.shots);
+    const onTarget = getStat(teamStats, statAliases.onTarget);
+    const corners = getStat(teamStats, statAliases.corners);
+    const dangerous = getStat(teamStats, statAliases.dangerous);
+    const possession = getStat(teamStats, statAliases.possession);
+    const scale = Math.max(12, minute);
+    const parts = [[shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18], [dangerous, 24, 0.15]];
+    let weighted = 0;
+    let availableWeight = 0;
+    for (const [value, expected, weight] of parts) {
+      if (value === null) continue;
+      weighted += Math.min(1, (value * 90 / scale) / expected) * weight;
+      availableWeight += weight;
+    }
+    if (possession !== null) {
+      weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
+      availableWeight += 0.06;
+    }
+    const score = Math.round(Math.max(0, Math.min(100, availableWeight ? weighted / availableWeight * 100 : 0)));
+    return { name: teamStats?.team?.name || (index === 0 ? 'Home' : 'Away'), score };
+  });
+  sides.sort((a, b) => b.score - a.score);
+  return { sides, score: sides[0]?.score || 0 };
+}
 
-    <section class="table-card" aria-label="Live pressure index league table">
-      <div class="table-heading"><div><h2>Live pressure table</h2><p>Ranked by the higher team's pressure score</p></div><div class="auto-refresh"><span class="refresh-icon">↻</span> Auto-refresh</div></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th class="rank-col">#</th><th>MATCH</th><th class="center">TIME</th><th class="center">SCORE</th><th>PRESSURE</th><th class="right">RISK</th></tr></thead>
-          <tbody id="matchesBody"><tr><td colspan="6" class="empty-state"><span class="empty-icon">⌁</span><strong>Connecting to live match service</strong><span>Live fixtures will appear here soon.</span></td></tr></tbody>
-        </table>
-      </div>
-      <div class="table-footer"><span><i class="legend-dot high"></i>High 70–100 <i class="legend-dot medium"></i>Building 40–69 <i class="legend-dot low"></i>Low 0–39</span><span id="quotaText">Checking service status…</span></div>
-    </section>
-    <section class="method-note"><strong>How to read this</strong><p>Pressure is a transparent 0–100 heuristic from shots, shots on target, corners, dangerous attacks and possession, adjusted for game time.</p></section>
-    <footer>Live data via API-Football <span>•</span> Refreshes about once a minute</footer>
-  </main>
-</body>
-</html>
+function pressureClass(score) {
+  if (score >= 70) return 'high';
+  if (score >= 40) return 'medium';
+  return 'low';
+}
+
+function formatGoalEvent(event) {
+  const elapsed = Number(event.time?.elapsed);
+  const extra = event.time?.extra ? `+${event.time.extra}` : '';
+  const minute = Number.isFinite(elapsed) ? `${elapsed}${extra}'` : '—';
+  const player = event.player?.name || 'Goal';
+  const text = event.detail || '';
+  const suffix = /own goal/i.test(text) ? ' (OG)' : /penalty/i.test(text) ? ' (pen)' : '';
+  return `${minute} ${player}${suffix}`;
+}
+
+function teamGoalMarkup(teamId, events) {
+  const goals = getTeamEvents(teamId, events, (event) => event.type === 'Goal' || /goal/i.test(event.type || '')).slice(0, 3);
+  if (!goals.length) return '';
+  return `<div class="goal-events">${goals.map((goal) => `<span>⚽ ${escapeHtml(formatGoalEvent(goal))}</span>`).join('')}</div>`;
+}
+
+function teamCardMarkup(teamId, events) {
+  const yellowCards = getTeamEvents(teamId, events, (event) => {
+    const text = `${event.type || ''} ${event.detail || ''}`;
+    return /card/i.test(text) && /yellow/i.test(text);
+  }).length;
+  const redCards = getTeamEvents(teamId, events, (event) => {
+    const text = `${event.type || ''} ${event.detail || ''}`;
+    return /card/i.test(text) && /red/i.test(text);
+  }).length;
+  return `<span class="team-card-badges" aria-label="${yellowCards} yellow cards and ${redCards} red cards"><span class="team-card-pill yellow">${yellowCards}</span><span class="team-card-pill red">${redCards}</span></span>`;
+}
+
+function renderMatches(items) {
+  if (!items.length) {
+    renderEmpty('No live games right now', 'Live fixtures will appear here as soon as matches are underway.');
+    return;
+  }
+  body.innerHTML = items.map((item, index) => {
+    const { fixture, stats = [], statsError, events = [] } = item;
+    const match = fixture.fixture;
+    const teams = fixture.teams;
+    const goals = fixture.goals;
+    const pressure = pressureFor(item);
+    const top = pressure.sides[0];
+    const second = pressure.sides[1];
+    const cls = pressureClass(pressure.score);
+    const time = match.status?.elapsed === null || match.status?.elapsed === undefined ? match.status?.short || 'LIVE' : `${match.status.elapsed}'`;
+    const signals = stats.length ? signalText(stats) : 'Stats pending';
+    const logo = (team) => team.logo ? `<img class="team-logo" src="${escapeHtml(team.logo)}" alt="" loading="lazy">` : '<span class="team-logo fallback">●</span>';
+    const coverageNote = statsError ? 'Statistics unavailable' : (!stats.length ? 'Waiting for statistics' : '');
+    const trend = buildPressureTrend(item);
+    return `<tr>
+      <td class="rank-col rank">${String(index + 1).padStart(2, '0')}</td>
+      <td><div class="match-cell"><div class="teams"><div class="team-line">${logo(teams.home)}<span>${escapeHtml(teams.home.name)}</span><b>${goals.home ?? '–'}</b>${teamCardMarkup(teams.home.id, events)}</div>${teamGoalMarkup(teams.home.id, events)}<div class="team-line">${logo(teams.away)}<span>${escapeHtml(teams.away.name)}</span><b>${goals.away ?? '–'}</b>${teamCardMarkup(teams.away.id, events)}</div>${teamGoalMarkup(teams.away.id, events)}</div><div class="competition">${escapeHtml(fixture.league?.name || '')} <span>·</span> ${escapeHtml(fixture.league?.country || '')}</div></div></td>
+      <td class="center minute">${escapeHtml(String(time))}</td>
+      <td class="center score-cell">${goals.home ?? '–'} <span>:</span> ${goals.away ?? '–'}</td>
+      <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressure.score}</strong><span class="meter"><i class="${cls}" style="width:${pressure.score}%"></i></span><span class="level ${cls}">${cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div>${trend}<div class="pressure-team">${escapeHtml(top?.name || 'No data')}<span>${second?.score ?? 0} away</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
+      <td class="right signals">${escapeHtml(signals)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function signalText(stats) {
+  const values = stats.map((team) => ({
+    shots: getStat(team, statAliases.shots),
+    onTarget: getStat(team, statAliases.onTarget),
+    corners: getStat(team, statAliases.corners)
+  }));
+  const leader = values.sort((a, b) => ((b.onTarget || 0) * 3 + (b.shots || 0) + (b.corners || 0) * 2) - ((a.onTarget || 0) * 3 + (a.shots || 0) + (a.corners || 0) * 2))[0];
+  if (!leader || [leader.shots, leader.onTarget, leader.corners].every((v) => v === null)) return 'Limited data';
+  return `${leader.onTarget ?? 0} on target · ${leader.shots ?? 0} shots · ${leader.corners ?? 0} corners`;
+}
+
+function renderEmpty(title, description) {
+  body.innerHTML = `<tr><td colspan="6" class="empty-state"><span class="empty-icon">⌁</span><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></td></tr>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+}
+
+runRefresh();
+refreshTimer = window.setInterval(runRefresh, REFRESH_MS);
+window.addEventListener('beforeunload', () => window.clearInterval(refreshTimer));
+
