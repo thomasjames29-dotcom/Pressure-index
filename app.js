@@ -1,11 +1,10 @@
 const REFRESH_MS = 60_000;
-const PRESSURE_HISTORY_MAX_MINUTES = 15;
-const PRESSURE_WINDOW_OPTIONS = [10, 12, 15];
-const HISTORY_STORAGE_KEY = 'pressure-index-history-v1';
-const WINDOW_STORAGE_KEY = 'pressure-index-window-v1';
-const pressureHistory = loadPressureHistory();
-let currentMatches = [];
-let selectedPressureWindowMinutes = loadPressureWindow();
+const PRESSURE_WINDOW_MINUTES = 12;
+const HISTORY_LIMIT = 130;
+const FIXTURE_CACHE_TTL_MS = 3 * 60_000;
+const HISTORY_STORAGE_KEY = 'pressure-index-match-pressure-v2';
+const STATS_STORAGE_KEY = 'pressure-index-last-good-stats-v1';
+const FIXTURES_STORAGE_KEY = 'pressure-index-last-live-fixtures-v1';
 const $ = (selector) => document.querySelector(selector);
 const body = $('#matchesBody');
 const notice = $('#notice');
@@ -13,6 +12,10 @@ const statusText = $('#statusText');
 const updatedAt = $('#updatedAt');
 let refreshTimer;
 let refreshing = false;
+let currentMatches = [];
+const pressureHistory = loadMap(HISTORY_STORAGE_KEY);
+const lastGoodStats = loadMap(STATS_STORAGE_KEY);
+const lastLiveFixtures = loadMap(FIXTURES_STORAGE_KEY);
 
 const statAliases = {
   shots: ['Total Shots', 'Shots'],
@@ -22,37 +25,21 @@ const statAliases = {
   possession: ['Ball Possession']
 };
 
-function loadPressureHistory() {
+function loadMap(key) {
   try {
-    const stored = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '{}');
-    return new Map(Object.entries(stored).map(([key, entries]) => [key, Array.isArray(entries) ? entries : []]));
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    return new Map(Object.entries(value));
   } catch {
     return new Map();
   }
 }
 
-function savePressureHistory() {
+function saveMap(key, map) {
   try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(Object.fromEntries(pressureHistory)));
+    localStorage.setItem(key, JSON.stringify(Object.fromEntries(map)));
   } catch {
-    // The chart still works for the current page if browser storage is unavailable.
+    // Continue with in-memory data if storage is unavailable or full.
   }
-}
-
-function loadPressureWindow() {
-  const stored = Number(localStorage.getItem(WINDOW_STORAGE_KEY));
-  return PRESSURE_WINDOW_OPTIONS.includes(stored) ? stored : 12;
-}
-
-function setPressureWindowMinutes(minutes) {
-  if (!PRESSURE_WINDOW_OPTIONS.includes(minutes)) return;
-  selectedPressureWindowMinutes = minutes;
-  try {
-    localStorage.setItem(WINDOW_STORAGE_KEY, String(minutes));
-  } catch {
-    // Keep the selected value for this page session.
-  }
-  renderMatches(currentMatches);
 }
 
 async function runRefresh() {
@@ -63,27 +50,77 @@ async function runRefresh() {
     const response = await fetch('/api/live', { headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
-    const matches = Array.isArray(payload.matches) ? payload.matches : [];
-    matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
+    let matches = Array.isArray(payload.matches) ? payload.matches : [];
+    const recovered = matches.length === 0 ? getRecentlyMissingFixtures() : [];
+    if (recovered.length) matches = recovered;
+    matches = matches.map(useLatestGoodStats);
+    if (Array.isArray(payload.matches) && payload.matches.length) cacheFixtures(matches);
     currentMatches = matches;
+
     matches.forEach(updatePressureHistory);
-    savePressureHistory();
+    saveMap(HISTORY_STORAGE_KEY, pressureHistory);
+    saveMap(STATS_STORAGE_KEY, lastGoodStats);
+    saveMap(FIXTURES_STORAGE_KEY, lastLiveFixtures);
+    matches.sort((a, b) => pressureFor(b).score - pressureFor(a).score);
     renderMatches(matches);
 
     const now = new Date();
-    statusText.textContent = 'Live data connected';
+    statusText.textContent = recovered.length ? 'Showing recently cached fixtures' : 'Live data connected';
     updatedAt.textContent = `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
     $('#matchCount').textContent = String(matches.length);
     notice.textContent = matches.length
-      ? `Showing ${matches.length} live ${matches.length === 1 ? 'fixture' : 'fixtures'}. Data is refreshed about once a minute.`
-      : 'No live fixtures were returned right now. The table will check again in one minute.';
+      ? `${recovered.length ? 'Live fixture response was empty; temporarily showing the last successful scan. ' : ''}Showing ${matches.length} live ${matches.length === 1 ? 'fixture' : 'fixtures'}. Data is refreshed about once a minute.`
+      : 'No live fixtures were returned. The table will check again in one minute.';
   } catch (error) {
-    statusText.textContent = 'Connection problem';
-    notice.textContent = `Could not load live data: ${error.message}. The service may be starting up, or its API key may need to be configured by the site owner.`;
-    if (!body.children.length || body.querySelector('.empty-state')) renderEmpty('Unable to load games', error.message);
+    statusText.textContent = 'Connection problem — keeping last scan';
+    notice.textContent = `Live refresh failed: ${error.message}. Showing the last successful scan where available; pressure is not reset to zero.`;
+    if (currentMatches.length) renderMatches(currentMatches, true);
+    else if (!body.children.length || body.querySelector('.empty-state')) renderEmpty('Unable to load games', error.message);
   } finally {
     refreshing = false;
   }
+}
+
+function cacheFixtures(matches) {
+  const now = Date.now();
+  matches.forEach((item) => {
+    const key = fixtureKey(item);
+    lastLiveFixtures.set(key, { item, seenAt: now });
+  });
+}
+
+function getRecentlyMissingFixtures() {
+  const cutoff = Date.now() - FIXTURE_CACHE_TTL_MS;
+  return [...lastLiveFixtures.values()]
+    .filter((entry) => entry?.seenAt >= cutoff && entry.item?.fixture)
+    .map((entry) => ({ ...entry.item, _temporarilyCached: true }));
+}
+
+function fixtureKey(item) {
+  const fixture = item?.fixture?.fixture || {};
+  const teams = item?.fixture?.teams || {};
+  return String(fixture.id || `${teams.home?.id ?? 'home'}-${teams.away?.id ?? 'away'}-${fixture.date || 'fixture'}`);
+}
+
+function useLatestGoodStats(item) {
+  const key = fixtureKey(item);
+  const currentStats = Array.isArray(item.stats) ? item.stats : [];
+  const isFresh = currentStats.length > 0 && !item.statsError;
+  if (isFresh) {
+    lastGoodStats.set(key, { stats: currentStats, savedAt: Date.now() });
+    return { ...item, stats: currentStats, statsStatus: 'current' };
+  }
+
+  const cached = lastGoodStats.get(key);
+  if (cached?.stats?.length) {
+    return {
+      ...item,
+      stats: cached.stats,
+      statsStatus: 'cached',
+      statsError: item.statsError || 'No statistics in the latest response; using the last successful statistics.'
+    };
+  }
+  return { ...item, stats: currentStats, statsStatus: 'unavailable' };
 }
 
 function numberValue(value) {
@@ -105,14 +142,21 @@ function getTeamEvents(teamId, events, predicate) {
   return (Array.isArray(events) ? events : []).filter((event) => String(event.team?.id) === String(teamId) && predicate(event));
 }
 
-function teamPressureScore(teamStats, minute) {
-  const shots = getStat(teamStats, statAliases.shots);
-  const onTarget = getStat(teamStats, statAliases.onTarget);
-  const corners = getStat(teamStats, statAliases.corners);
-  const dangerous = getStat(teamStats, statAliases.dangerous);
-  const possession = getStat(teamStats, statAliases.possession);
+function orderedStats(item) {
+  const stats = Array.isArray(item?.stats) ? item.stats : [];
+  const teams = item?.fixture?.teams || {};
+  const find = (id, fallback) => stats.find((entry) => String(entry?.team?.id) === String(id)) || stats[fallback];
+  return [find(teams.home?.id, 0), find(teams.away?.id, 1)];
+}
+
+function statsSnapshot(teamStats) {
+  return Object.fromEntries(Object.entries(statAliases).map(([key, aliases]) => [key, getStat(teamStats, aliases)]));
+}
+
+function cumulativePressure(teamStats, minute) {
+  if (!teamStats) return null;
   const scale = Math.max(12, minute);
-  const parts = [[shots, 7, 0.27], [onTarget, 3, 0.34], [corners, 5, 0.18], [dangerous, 24, 0.15]];
+  const parts = [[getStat(teamStats, statAliases.shots), 7, 0.27], [getStat(teamStats, statAliases.onTarget), 3, 0.34], [getStat(teamStats, statAliases.corners), 5, 0.18], [getStat(teamStats, statAliases.dangerous), 24, 0.15]];
   let weighted = 0;
   let availableWeight = 0;
   for (const [value, expected, weight] of parts) {
@@ -120,120 +164,130 @@ function teamPressureScore(teamStats, minute) {
     weighted += Math.min(1, (value * 90 / scale) / expected) * weight;
     availableWeight += weight;
   }
+  const possession = getStat(teamStats, statAliases.possession);
   if (possession !== null) {
     weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
     availableWeight += 0.06;
   }
-  return Math.round(Math.max(0, Math.min(100, availableWeight ? weighted / availableWeight * 100 : 0)));
+  return availableWeight ? Math.round(Math.max(0, Math.min(100, weighted / availableWeight * 100))) : null;
 }
 
-function pressureHistoryKey(item) {
-  const match = item?.fixture?.fixture || {};
-  const teams = item?.fixture?.teams || {};
-  return String(match.id || `${teams.home?.id ?? 'home'}-${teams.away?.id ?? 'away'}-${match.date || 'fixture'}`);
-}
-
-function orderedTeamStats(item) {
-  const stats = Array.isArray(item?.stats) ? item.stats : [];
-  const homeId = item?.fixture?.teams?.home?.id;
-  const awayId = item?.fixture?.teams?.away?.id;
-  const forTeam = (id, fallbackIndex) => stats.find((entry) => String(entry?.team?.id) === String(id)) || stats[fallbackIndex];
-  return [forTeam(homeId, 0), forTeam(awayId, 1)];
+function rollingPressure(current, baseline, teamStats, durationMinutes, minute) {
+  // Before a full 12-minute baseline exists, use the existing match-to-date heuristic.
+  if (!baseline || durationMinutes < 11.5) return cumulativePressure(teamStats, minute);
+  const parts = [
+    ['shots', 2, 0.27],
+    ['onTarget', 1, 0.34],
+    ['corners', 1, 0.18],
+    ['dangerous', 6, 0.15]
+  ];
+  let weighted = 0;
+  let availableWeight = 0;
+  for (const [key, expected, weight] of parts) {
+    const nowValue = current?.[key];
+    const thenValue = baseline?.[key];
+    if (!Number.isFinite(nowValue)) continue;
+    const difference = Number.isFinite(thenValue) ? Math.max(0, nowValue - thenValue) : nowValue;
+    weighted += Math.min(1, difference / expected) * weight;
+    availableWeight += weight;
+  }
+  const possession = current?.possession;
+  if (Number.isFinite(possession)) {
+    weighted += Math.min(1, Math.max(0, possession - 45) / 30) * 0.06;
+    availableWeight += 0.06;
+  }
+  return availableWeight ? Math.round(Math.max(0, Math.min(100, weighted / availableWeight * 100))) : null;
 }
 
 function updatePressureHistory(item) {
-  const [homeStats, awayStats] = orderedTeamStats(item);
+  const [homeStats, awayStats] = orderedStats(item);
   if (!homeStats && !awayStats) return;
+  const key = fixtureKey(item);
+  const history = pressureHistory.get(key) || [];
   const minute = Number(item?.fixture?.fixture?.status?.elapsed) || 0;
   const now = Date.now();
-  const key = pressureHistoryKey(item);
-  const history = pressureHistory.get(key) || [];
+  const prior = history[history.length - 1];
   const sample = {
     timestamp: now,
     minute,
-    home: homeStats ? teamPressureScore(homeStats, minute) : null,
-    away: awayStats ? teamPressureScore(awayStats, minute) : null
+    homeStats: homeStats ? statsSnapshot(homeStats) : prior?.homeStats || null,
+    awayStats: awayStats ? statsSnapshot(awayStats) : prior?.awayStats || null,
+    home: null,
+    away: null
   };
-  const cutoff = now - PRESSURE_HISTORY_MAX_MINUTES * 60 * 1000;
-  const retained = history.filter((entry) => entry.timestamp >= cutoff);
-  const last = retained[retained.length - 1];
-  if (last && now - last.timestamp < 5_000) retained[retained.length - 1] = sample;
-  else retained.push(sample);
-  pressureHistory.set(key, retained);
+
+  const cutoff = now - PRESSURE_WINDOW_MINUTES * 60_000;
+  const baseline = [...history].reverse().find((point) => point.timestamp <= cutoff || minute - point.minute >= PRESSURE_WINDOW_MINUTES);
+  const actualDuration = baseline
+    ? Math.max(0, Math.min(PRESSURE_WINDOW_MINUTES, (now - baseline.timestamp) / 60_000 || minute - baseline.minute))
+    : Math.min(PRESSURE_WINDOW_MINUTES, minute);
+
+  sample.home = rollingPressure(sample.homeStats, baseline?.homeStats, homeStats, actualDuration, minute);
+  sample.away = rollingPressure(sample.awayStats, baseline?.awayStats, awayStats, actualDuration, minute);
+  if (sample.home === null && prior) sample.home = prior.home;
+  if (sample.away === null && prior) sample.away = prior.away;
+
+  // Replace same-minute retries; otherwise preserve every scan as a full-match timeline point.
+  if (prior && prior.minute === minute && now - prior.timestamp < 50_000) history[history.length - 1] = sample;
+  else history.push(sample);
+  while (history.length > HISTORY_LIMIT) history.shift();
+  pressureHistory.set(key, history);
+}
+
+function latestPressure(item) {
+  const history = pressureHistory.get(fixtureKey(item)) || [];
+  const point = history[history.length - 1];
+  if (point) return { home: point.home, away: point.away };
+  const [homeStats, awayStats] = orderedStats(item);
+  const minute = Number(item?.fixture?.fixture?.status?.elapsed) || 0;
+  return { home: cumulativePressure(homeStats, minute), away: cumulativePressure(awayStats, minute) };
+}
+
+function pressureFor(item) {
+  const scores = latestPressure(item);
+  const teams = item?.fixture?.teams || {};
+  const sides = [
+    { name: teams.home?.name || 'Home', score: scores.home },
+    { name: teams.away?.name || 'Away', score: scores.away }
+  ];
+  const available = sides.filter((side) => Number.isFinite(side.score));
+  available.sort((a, b) => b.score - a.score);
+  return { sides, score: available[0]?.score ?? null };
 }
 
 function buildPressureTrend(item) {
-  const key = pressureHistoryKey(item);
-  const cutoff = Date.now() - selectedPressureWindowMinutes * 60 * 1000;
-  const points = (pressureHistory.get(key) || []).filter((entry) => entry.timestamp >= cutoff);
+  const history = pressureHistory.get(fixtureKey(item)) || [];
   const homeName = item?.fixture?.teams?.home?.name || 'Home';
   const awayName = item?.fixture?.teams?.away?.name || 'Away';
-  const width = 300;
-  const height = 136;
-  const left = 28;
-  const right = 8;
-  const top = 8;
-  const bottom = 22;
+  const currentMinute = Number(item?.fixture?.fixture?.status?.elapsed) || 0;
+  const maxMinute = Math.max(90, currentMinute, ...history.map((point) => point.minute || 0));
+  const width = 360;
+  const height = 190;
+  const left = 36;
+  const right = 10;
+  const top = 12;
+  const bottom = 28;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
+  const xFor = (minute) => left + Math.max(0, Math.min(maxMinute, minute)) / maxMinute * plotWidth;
   const yFor = (score) => top + (100 - score) / 100 * plotHeight;
-  const xFor = (entry) => {
-    const span = selectedPressureWindowMinutes * 60 * 1000;
-    return left + Math.max(0, Math.min(1, (entry.timestamp - cutoff) / span)) * plotWidth;
-  };
-  const makePath = (side) => {
-    const available = points.filter((entry) => Number.isFinite(entry[side]));
-    if (!available.length) return '';
-    if (available.length === 1) {
-      const x = xFor(available[0]);
-      const y = yFor(available[0][side]);
-      return `M ${x - 0.1} ${y} L ${x + 0.1} ${y}`;
-    }
-    return available.map((entry, index) => `${index ? 'L' : 'M'} ${xFor(entry)} ${yFor(entry[side])}`).join(' ');
-  };
-  const homePath = makePath('home');
-  const awayPath = makePath('away');
-  const dots = points.map((entry) => {
-    const x = xFor(entry);
-    const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return [
-      Number.isFinite(entry.home) ? `<circle class="trend-point home" cx="${x}" cy="${yFor(entry.home)}" r="3.5"><title>${escapeHtml(homeName)}: ${entry.home} at ${time}</title></circle>` : '',
-      Number.isFinite(entry.away) ? `<circle class="trend-point away" cx="${x}" cy="${yFor(entry.away)}" r="3.5"><title>${escapeHtml(awayName)}: ${entry.away} at ${time}</title></circle>` : ''
-    ].join('');
-  }).join('');
-  const hasData = points.length > 0;
-
-  return `<section class="pressure-trend" aria-label="Team pressure trend over ${selectedPressureWindowMinutes} minutes">
-    <div class="trend-heading"><strong>Pressure trend</strong><span>Last ${selectedPressureWindowMinutes} minutes</span></div>
-    <div class="chart-window-controls" role="group" aria-label="Chart time window">
-      ${PRESSURE_WINDOW_OPTIONS.map((minutes) => `<button type="button" class="chart-window-button ${minutes === selectedPressureWindowMinutes ? 'active' : ''}" data-window-minutes="${minutes}" aria-pressed="${minutes === selectedPressureWindowMinutes}">${minutes} min</button>`).join('')}
-    </div>
+  const pathFor = (side) => history.filter((point) => Number.isFinite(point[side]))
+    .map((point, index) => `${index ? 'L' : 'M'} ${xFor(point.minute)} ${yFor(point[side])}`).join(' ');
+  const grid = [0, 25, 50, 75, 100].map((score) => `<line class="chart-grid" x1="${left}" y1="${yFor(score)}" x2="${width - right}" y2="${yFor(score)}"/><text class="chart-axis" x="${left - 7}" y="${yFor(score) + 4}" text-anchor="end">${score}</text>`).join('');
+  const timeTicks = [0, 15, 30, 45, 60, 75, 90].filter((minute) => minute <= maxMinute).map((minute) => `<text class="chart-time" x="${xFor(minute)}" y="${height - 7}" text-anchor="middle">${minute}'</text>`).join('');
+  const dots = history.map((point) => `<circle class="trend-point home" cx="${xFor(point.minute)}" cy="${yFor(point.home ?? 0)}" r="2.5"><title>${escapeHtml(homeName)} ${Number.isFinite(point.home) ? point.home : 'unavailable'} at ${point.minute}'</title></circle><circle class="trend-point away" cx="${xFor(point.minute)}" cy="${yFor(point.away ?? 0)}" r="2.5"><title>${escapeHtml(awayName)} ${Number.isFinite(point.away) ? point.away : 'unavailable'} at ${point.minute}'</title></circle>`).join('');
+  return `<section class="pressure-trend" aria-label="Full-match pressure trend">
+    <div class="trend-heading"><strong>Pressure trend</strong><span>Full match · 12-minute rolling pressure</span></div>
     <div class="trend-legend"><span><i class="swatch home"></i>${escapeHtml(homeName)}</span><span><i class="swatch away"></i>${escapeHtml(awayName)}</span></div>
-    ${hasData ? `<svg class="pressure-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(homeName)} and ${escapeHtml(awayName)} pressure scores from 0 to 100 over the last ${selectedPressureWindowMinutes} minutes">
-      <line class="chart-grid" x1="${left}" y1="${yFor(100)}" x2="${width - right}" y2="${yFor(100)}"/><line class="chart-grid" x1="${left}" y1="${yFor(50)}" x2="${width - right}" y2="${yFor(50)}"/><line class="chart-grid" x1="${left}" y1="${yFor(0)}" x2="${width - right}" y2="${yFor(0)}"/>
-      <text class="chart-axis" x="1" y="${yFor(100) + 3}">100</text><text class="chart-axis" x="7" y="${yFor(50) + 3}">50</text><text class="chart-axis" x="13" y="${yFor(0) + 3}">0</text>
-      <path class="trend-line home" d="${homePath}"/><path class="trend-line away" d="${awayPath}"/>${dots}
-      <text class="chart-time" x="${left}" y="${height - 4}">-${selectedPressureWindowMinutes}m</text><text class="chart-time" x="${width - right}" y="${height - 4}" text-anchor="end">Now</text>
-    </svg>` : '<p class="trend-empty">Waiting for team statistics to build the trend.</p>'}
+    <svg class="pressure-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(homeName)} and ${escapeHtml(awayName)} 12-minute rolling pressure from kickoff to now">
+      ${grid}<path class="trend-line home" d="${pathFor('home')}"/><path class="trend-line away" d="${pathFor('away')}"/>${dots}${timeTicks}
+    </svg>
+    ${history.length < 2 ? '<p class="trend-empty">Full-match trend builds from the first successful scan on this device.</p>' : ''}
   </section>`;
 }
 
-function pressureFor({ fixture, stats = [] }) {
-  const minute = Number(fixture.fixture?.status?.elapsed) || 0;
-  const teams = fixture.teams || {};
-  const homeId = teams.home?.id;
-  const awayId = teams.away?.id;
-  const homeStats = stats.find((entry) => String(entry?.team?.id) === String(homeId)) || stats[0];
-  const awayStats = stats.find((entry) => String(entry?.team?.id) === String(awayId)) || stats[1];
-  const sides = [
-    { name: teams.home?.name || homeStats?.team?.name || 'Home', score: teamPressureScore(homeStats, minute) },
-    { name: teams.away?.name || awayStats?.team?.name || 'Away', score: teamPressureScore(awayStats, minute) }
-  ];
-  sides.sort((a, b) => b.score - a.score);
-  return { sides, score: sides[0]?.score || 0 };
-}
-
 function pressureClass(score) {
+  if (!Number.isFinite(score)) return 'unknown';
   if (score >= 70) return 'high';
   if (score >= 40) return 'medium';
   return 'low';
@@ -244,8 +298,7 @@ function formatGoalEvent(event) {
   const extra = event.time?.extra ? `+${event.time.extra}` : '';
   const minute = Number.isFinite(elapsed) ? `${elapsed}${extra}'` : '—';
   const player = event.player?.name || 'Goal';
-  const text = event.detail || '';
-  const suffix = /own goal/i.test(text) ? ' (OG)' : /penalty/i.test(text) ? ' (pen)' : '';
+  const suffix = /own goal/i.test(event.detail || '') ? ' (OG)' : /penalty/i.test(event.detail || '') ? ' (pen)' : '';
   return `${minute} ${player}${suffix}`;
 }
 
@@ -261,7 +314,7 @@ function teamCardMarkup(teamId, events) {
   return `<span class="team-card-badges" aria-label="${yellowCards} yellow cards and ${redCards} red cards"><span class="team-card-pill yellow">${yellowCards}</span><span class="team-card-pill red">${redCards}</span></span>`;
 }
 
-function renderMatches(items) {
+function renderMatches(items, staleRefresh = false) {
   if (!items.length) {
     renderEmpty('No live games right now', 'Live fixtures will appear here as soon as matches are underway.');
     return;
@@ -272,22 +325,27 @@ function renderMatches(items) {
     const teams = fixture.teams;
     const goals = fixture.goals;
     const pressure = pressureFor(item);
-    const top = pressure.sides[0];
-    const second = pressure.sides[1];
-    const cls = pressureClass(pressure.score);
+    const top = pressure.sides.filter((side) => Number.isFinite(side.score)).sort((a, b) => b.score - a.score)[0];
+    const second = pressure.sides.filter((side) => Number.isFinite(side.score)).sort((a, b) => b.score - a.score)[1];
+    const score = pressure.score;
+    const cls = pressureClass(score);
     const time = match.status?.elapsed === null || match.status?.elapsed === undefined ? match.status?.short || 'LIVE' : `${match.status.elapsed}'`;
-    const signals = stats.length ? signalText(stats) : 'Stats pending';
+    const signals = stats.length ? signalText(stats) : 'Statistics temporarily unavailable';
     const logo = (team) => team.logo ? `<img class="team-logo" src="${escapeHtml(team.logo)}" alt="" loading="lazy">` : '<span class="team-logo fallback">●</span>';
-    const coverageNote = statsError ? 'Statistics unavailable' : (!stats.length ? 'Waiting for statistics' : '');
+    const cacheNote = item._temporarilyCached ? 'Fixture list temporarily unavailable; retaining last scan.' : item.statsStatus === 'cached' ? 'Using last successful statistics; latest fetch unavailable.' : '';
+    const coverageNote = cacheNote || (statsError ? 'Statistics unavailable; pressure retained where possible.' : (!stats.length ? 'Waiting for statistics' : ''));
+    const pressureText = Number.isFinite(score) ? score : '—';
+    const meterWidth = Number.isFinite(score) ? score : 0;
     return `<tr>
       <td class="rank-col rank">${String(index + 1).padStart(2, '0')}</td>
       <td><div class="match-cell"><div class="teams"><div class="team-line">${logo(teams.home)}<span>${escapeHtml(teams.home.name)}</span><b>${goals.home ?? '–'}</b>${teamCardMarkup(teams.home.id, events)}</div>${teamGoalMarkup(teams.home.id, events)}<div class="team-line">${logo(teams.away)}<span>${escapeHtml(teams.away.name)}</span><b>${goals.away ?? '–'}</b>${teamCardMarkup(teams.away.id, events)}</div>${teamGoalMarkup(teams.away.id, events)}</div><div class="competition">${escapeHtml(fixture.league?.name || '')} <span>·</span> ${escapeHtml(fixture.league?.country || '')}</div></div></td>
       <td class="center minute">${escapeHtml(String(time))}</td>
       <td class="center score-cell">${goals.home ?? '–'} <span>:</span> ${goals.away ?? '–'}</td>
-      <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressure.score}</strong><span class="meter"><i class="${cls}" style="width:${pressure.score}%"></i></span><span class="level ${cls}">${cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div>${buildPressureTrend(item)}<div class="pressure-team">${escapeHtml(top?.name || 'No data')}<span>${second?.score ?? 0} away</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
+      <td><div class="pressure-cell"><div class="pressure-top"><strong class="${cls}-text">${pressureText}</strong><span class="meter"><i class="${cls}" style="width:${meterWidth}%"></i></span><span class="level ${cls}">${!Number.isFinite(score) ? 'NO DATA' : cls === 'high' ? 'HIGH' : cls === 'medium' ? 'BUILDING' : 'LOW'}</span></div>${buildPressureTrend(item)}<div class="pressure-team">${escapeHtml(top?.name || 'Pressure unavailable')}<span>${Number.isFinite(second?.score) ? `${second.score} away` : 'away unavailable'}</span></div>${coverageNote ? `<small class="coverage-note">${escapeHtml(coverageNote)}</small>` : ''}</div></td>
       <td class="right signals">${escapeHtml(signals)}</td>
     </tr>`;
   }).join('');
+  if (staleRefresh) statusText.textContent = 'Showing last successful scan';
 }
 
 function signalText(stats) {
@@ -304,11 +362,6 @@ function renderEmpty(title, description) {
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
-
-document.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-window-minutes]');
-  if (button) setPressureWindowMinutes(Number(button.dataset.windowMinutes));
-});
 
 runRefresh();
 refreshTimer = window.setInterval(runRefresh, REFRESH_MS);
