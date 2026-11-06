@@ -1,0 +1,8 @@
+.auto-refresh-controls{display:flex;align-items:center;justify-content:flex-end;gap:.55rem;flex-wrap:wrap}
+.auto-refresh-toggle,.manual-refresh-button{display:inline-flex;align-items:center;justify-content:center;gap:.45rem;min-height:2.35rem;padding:.45rem .7rem;border:1px solid var(--line);border-radius:9px;background:rgba(18,38,63,.7);color:var(--text);font:600 .78rem 'DM Sans',system-ui,sans-serif;cursor:pointer;transition:background .15s ease,border-color .15s ease,color .15s ease}
+.auto-refresh-toggle:hover,.manual-refresh-button:hover{border-color:var(--green);background:rgba(18,38,63,.98)}
+.auto-refresh-toggle[aria-pressed="true"]{border-color:rgba(85,231,178,.4);color:var(--green)}
+.auto-refresh-toggle.is-paused{border-color:rgba(248,215,106,.4);color:var(--yellow)}
+.auto-refresh-toggle:focus-visible,.manual-refresh-button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.auto-refresh-toggle .refresh-icon{font-size:1rem}
+@media(max-width:700px){.auto-refresh-controls{justify-content:flex-start}.auto-refresh-toggle,.manual-refresh-button{font-size:.72rem;min-height:2.2rem;padding:.4rem .55rem}}
