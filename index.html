@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#07111e">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-acable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Pressure Index">
   <title>Pressure Index — Pre-Match Goal Analysis</title>
@@ -47,8 +47,8 @@
     </section>
 
     <nav class="day-tabs" role="tablist" aria-label="Fixture day">
-      <button class="day-tab active" id="currentTab" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button>
-      <button class="day-tab" id="nextTab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button>
+      <button class="day-tab active" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button>
+      <button class="day-tab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button>
     </nav>
 
     <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
@@ -60,8 +60,18 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>ANALYSIS SOURCE</th><th class="probability-heading">OVER 0.5 GOALS</th></tr></thead>
-          <tbody id="matchesBody"><tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Loading upcoming fixtures</strong><span>Fetching the selected 8am–8am window.</span></td></tr></tbody>
+          <thead>
+            <tr>
+              <th>KICK-OFF</th>
+              <th>FIXTURE</th>
+              <th>COMPETITION</th>
+              <th>ANALYSIS SOURCE</th>
+              <th class="probability-heading">OVER 0.5 GOALS</th>
+            </tr>
+          </thead>
+          <tbody id="matchesBody">
+            <tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Loading upcoming fixtures</strong><span>Fetching the selected 8am–8am window.</span></td></tr>
+          </tbody>
         </table>
       </div>
       <div class="chart-footnote">Probability scores are estimates, not guarantees or betting advice. Provider predictions are requested in small batches; a baseline is shown when a prediction is unavailable.</div>

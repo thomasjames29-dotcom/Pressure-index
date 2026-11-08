@@ -11,6 +11,29 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Lon
 let activeDay = 0;
 let loading = false;
 
+function computeCurrentDayWindow() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now);
+  const map = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  const hour = Number(map.hour || 0);
+  const date = `${map.year}-${map.month}-${map.day}`;
+  const baseDate = hour >= 8 ? date : addCalendarDays(date, -1);
+  return { baseDate, nextDate: addCalendarDays(baseDate, 1) };
+}
+
+function addCalendarDays(dateString, amount) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day + amount));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
 async function loadFixtures(day = activeDay) {
   if (loading) return;
   loading = true;
@@ -27,6 +50,7 @@ async function loadFixtures(day = activeDay) {
     const fixtures = Array.isArray(payload.fixtures) ? payload.fixtures : [];
     fixtures.sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
     const likelyCount = fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length;
+
     renderFixtures(fixtures);
     matchCount.textContent = String(fixtures.length);
     likelySummary.textContent = `${likelyCount} ${likelyCount === 1 ? 'fixture' : 'fixtures'}`;
@@ -95,5 +119,8 @@ function escapeHtml(value) {
 
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
 loadFixtures(0);
-// Re-evaluate the rolling 8am day boundary and refresh the currently selected window.
-window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
+window.setInterval(() => {
+  const { baseDate, nextDate } = computeCurrentDayWindow();
+  const selectedWindow = activeDay === 0 ? baseDate : nextDate;
+  if (selectedWindow) loadFixtures(activeDay);
+}, 600_000);
