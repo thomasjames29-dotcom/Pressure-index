@@ -8,56 +8,86 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Pressure Index">
-  <title>Pressure Index — Live Football</title>
+  <title>Pressure Index — Pre Match Analysis</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="mask-icon" href="/icon.svg" color="#07111e">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="mobile.css">
-  <link rel="stylesheet" href="trend-chart.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#" aria-label="Pressure Index home"><span class="brand-mark">P</span><span>PRESSURE<span class="brand-muted"> INDEX</span></span></a>
-    <div class="top-status"><span class="live-dot"></span><span id="statusText">Connecting…</span><span class="status-divider">·</span><span id="updatedAt">Loading live data</span></div>
+    <div class="brand-wrap">
+      <div class="brand-mark">P</div>
+      <div>
+        <div class="brand-name">PRESSURE INDEX</div>
+        <div class="brand-subtitle">PRE-MATCH ANALYSIS</div>
+      </div>
+    </div>
+    <div class="top-status">
+      <span class="live-dot"></span>
+      <span id="statusText">Loading fixtures…</span>
+      <span class="status-divider">·</span>
+      <span id="updatedAt">Waiting for data</span>
+    </div>
   </header>
 
   <main class="page">
     <section class="intro">
       <div>
-        <p class="eyebrow">LIVE MATCH CENTRE</p>
-        <h1>Feel the <span>momentum.</span></h1>
-        <p class="lede">Live matches ranked by attacking pressure. A signal to watch—not a promise that a goal is coming.</p>
+        <p class="eyebrow">48-HOUR MATCH WINDOW</p>
+        <h1>Goal chances <span>before kickoff.</span></h1>
+        <p class="lede">Upcoming fixtures sorted by kickoff. Each match shows the probability that over 0.5 goals will land.</p>
       </div>
-      <div class="live-count"><span id="matchCount">—</span><small>LIVE MATCHES</small></div>
+      <div class="live-count">
+        <span id="matchCount">0</span>
+        <small>FIXTURES</small>
+      </div>
     </section>
 
-    <section class="key-panel" aria-label="Secure API connection">
-      <div class="key-copy"><strong>Live data connection</strong><span>API credentials are kept server-side and are never sent to your browser.</span></div>
-      <span class="connection-label"><i class="live-dot"></i> Secure server connection</span>
+    <section class="summary-panel" aria-label="Fixture summary">
+      <div>
+        <strong>Forecast window</strong>
+        <span id="windowSummary">Next 48 hours</span>
+      </div>
+      <div>
+        <strong>Likely over 0.5 goals</strong>
+        <span id="likelySummary">0 matches</span>
+      </div>
     </section>
 
-    <div class="filters" aria-label="League filters">
-      <label><span>League</span><select id="leagueFilter"><option value="all">All leagues</option></select></label>
-      <label><span>Country</span><select id="countryFilter"><option value="all">All countries</option></select></label>
-      <button id="resetFilters" class="ghost-button" type="button">Reset</button>
-    </div>
+    <p id="notice" class="notice" role="status">Fetching the upcoming fixture list…</p>
 
-    <p id="notice" class="notice" role="status">Connecting to the live match service…</p>
+    <section class="table-card" aria-label="Upcoming fixture list">
+      <div class="table-heading">
+        <div>
+          <h2>Fixture watchlist</h2>
+          <p>Ordered by kickoff time</p>
+        </div>
+      </div>
 
-    <section class="table-card" aria-label="Live pressure index league table">
-      <div class="table-heading"><div><h2>Live pressure table</h2><p>Ranked by the higher team's pressure score</p></div><div class="auto-refresh"><span class="refresh-icon">↻</span> Auto-refresh</div></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th class="rank-col">#</th><th>MATCH</th><th class="center">TIME</th><th class="center">SCORE</th><th>PRESSURE</th><th class="right">RISK</th></tr></thead>
-          <tbody id="matchesBody"><tr><td colspan="6" class="empty-state"><span class="empty-icon">⌁</span><strong>Connecting to live match service</strong><span>Live fixtures will appear here soon.</span></td></tr></tbody>
+          <thead>
+            <tr>
+              <th class="kickoff-col">KICK-OFF</th>
+              <th>MATCH</th>
+              <th>LEAGUE</th>
+              <th>WINDOW</th>
+              <th>OVER 0.5</th>
+            </tr>
+          </thead>
+          <tbody id="matchesBody">
+            <tr>
+              <td colspan="5" class="empty-state">
+                <span class="empty-icon">⌁</span>
+                <strong>Loading upcoming fixtures</strong>
+                <span>We are gathering the next 48 hours of matches.</span>
+              </td>
+            </tr>
+          </tbody>
         </table>
       </div>
-      <div class="table-footer"><span><i class="legend-dot high"></i>High 70–100 <i class="legend-dot medium"></i>Building 40–69 <i class="legend-dot low"></i>Low 0–39</span><span id="quotaText">Checking service status…</span></div>
     </section>
-    <section class="method-note"><strong>How to read this</strong><p>Pressure is a transparent 0–100 heuristic calculated from changes in shots, shots on target, corners and dangerous attacks over a rolling 12-minute window, with a small possession contribution. Each fixture's chart shows both teams' pressure trend across the full match.</p></section>
-    <footer>Live data via API-Football <span>•</span> Refreshes about once a minute</footer>
   </main>
 </body>
 </html>
