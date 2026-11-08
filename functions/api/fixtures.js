@@ -10,12 +10,22 @@ export async function onRequestGet({ env }) {
 
   const now = new Date();
   const end = new Date(now.getTime() + 48 * 60 * 60 * 1000);
-  const fromDate = now.toISOString().slice(0, 10);
-  const toDate = end.toISOString().slice(0, 10);
+  // API-Football rejects some date-range requests with a misleading parameter
+  // validation error. Query each UTC calendar date separately, then apply the
+  // exact rolling 48-hour window locally.
+  const dates = [...new Set([now.toISOString().slice(0, 10), end.toISOString().slice(0, 10)])];
 
   try {
-    const entries = await apiGet(`/fixtures?timezone=UTC&from=${fromDate}&to=${toDate}`, env.APIFOOTBALL_KEY);
-    const upcoming = entries.filter((entry) => {
+    const dailyResults = await Promise.all(dates.map((date) => apiGet(
+      `/fixtures?date=${encodeURIComponent(date)}&timezone=UTC`,
+      env.APIFOOTBALL_KEY
+    )));
+    const unique = new Map();
+    dailyResults.flat().forEach((entry) => {
+      if (entry?.fixture?.id !== undefined) unique.set(String(entry.fixture.id), entry);
+    });
+
+    const upcoming = [...unique.values()].filter((entry) => {
       const kickoff = new Date(entry?.fixture?.date).getTime();
       const status = entry?.fixture?.status?.short;
       return Number.isFinite(kickoff) && kickoff >= now.getTime() && kickoff <= end.getTime()
