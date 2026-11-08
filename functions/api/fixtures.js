@@ -45,6 +45,7 @@ export async function onRequestGet({ request, env }) {
       if (index < MAX_PREDICTIONS_PER_WINDOW) {
         predictedTotal = await getPredictionTotal(entry.fixture.id, env.APIFOOTBALL_KEY).catch(() => null);
       }
+      const scorelines = buildScorelineSet(predictedTotal, entry.teams?.home?.name || 'Home', entry.teams?.away?.name || 'Away');
       fixtures.push({
         fixtureId: String(entry.fixture.id),
         kickoff: entry.fixture.date,
@@ -53,7 +54,9 @@ export async function onRequestGet({ request, env }) {
         league: entry.league?.name || 'Competition',
         country: entry.league?.country || '',
         over05Probability: estimateOver05(predictedTotal),
-        probabilitySource: predictedTotal === null ? 'baseline' : 'provider prediction'
+        probabilitySource: predictedTotal === null ? 'baseline' : 'provider prediction',
+        scorelines,
+        zeroZeroRisk: scorelines.some((scoreline) => scoreline.label === '0-0')
       });
       if (index % PREDICTION_BATCH_SIZE === 1) {
         await sleep(250);
@@ -80,6 +83,36 @@ export async function onRequestGet({ request, env }) {
   } catch (error) {
     return json({ error: safeMessage(error) }, 502, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   }
+}
+
+function buildScorelineSet(expectedGoals, homeName, awayName) {
+  const gHome = expectedGoals === null ? 1.3 : Math.max(0, expectedGoals * 0.55);
+  const gAway = expectedGoals === null ? 1.0 : Math.max(0, expectedGoals * 0.45);
+  const baseScores = [
+    { label: '0-0', probability: poissonProbability(0, gHome) * poissonProbability(0, gAway) },
+    { label: '1-0', probability: poissonProbability(1, gHome) * poissonProbability(0, gAway) },
+    { label: '0-1', probability: poissonProbability(0, gHome) * poissonProbability(1, gAway) },
+    { label: '1-1', probability: poissonProbability(1, gHome) * poissonProbability(1, gAway) },
+    { label: '2-0', probability: poissonProbability(2, gHome) * poissonProbability(0, gAway) },
+    { label: '0-2', probability: poissonProbability(0, gHome) * poissonProbability(2, gAway) },
+    { label: '2-1', probability: poissonProbability(2, gHome) * poissonProbability(1, gAway) },
+    { label: '1-2', probability: poissonProbability(1, gHome) * poissonProbability(2, gAway) },
+    { label: '2-2', probability: poissonProbability(2, gHome) * poissonProbability(2, gAway) }
+  ];
+  const total = baseScores.reduce((sum, item) => sum + item.probability, 0) || 1;
+  const sorted = baseScores
+    .map((item) => ({ ...item, probability: (item.probability / total) * 100 }))
+    .sort((a, b) => b.probability - a.probability)
+    .slice(0, 3);
+  return sorted.map((item) => ({ ...item, homeName, awayName }));
+}
+
+function poissonProbability(k, lambda) {
+  if (lambda <= 0) return k === 0 ? 1 : 0;
+  const e = Math.exp(-lambda);
+  let prob = 1;
+  for (let i = 1; i <= k; i += 1) prob *= lambda / i;
+  return e * prob;
 }
 
 async function getPredictionTotal(fixtureId, key) {
