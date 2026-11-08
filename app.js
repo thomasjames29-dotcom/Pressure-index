@@ -56,7 +56,7 @@ async function loadFixtures(day = activeDay) {
     likelySummary.textContent = `${likelyCount} ${likelyCount === 1 ? 'fixture' : 'fixtures'}`;
     windowSummary.textContent = computeWindowLabel(day);
     notice.textContent = fixtures.length
-      ? `Showing ${fixtures.length} fixtures for this 8am–8am window, sorted by local kickoff. Green outlines indicate a model-estimated 60%+ chance of over 1.5 goals; amber indicates 0-0 is among the top three scorelines.`
+      ? `Showing ${fixtures.length} fixtures for this 8am–8am window. First-goal times and exchange prices are model estimates, not live market quotes.`
       : 'No upcoming fixtures were found in this 8am–8am window.';
     updatedAt.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     statusText.textContent = 'Analysis updated';
@@ -102,6 +102,12 @@ function renderFixtures(fixtures) {
       : highGoalPotential
         ? `<span class="risk-label green-label">Over 1.5 model · ${Math.round(over15)}%</span>`
         : '';
+    const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute))
+      ? `Expected first goal ~${Math.round(Number(fixture.firstGoalExpectedMinute))}′`
+      : 'First-goal timing unavailable';
+    const oddsLadder = Array.isArray(fixture.inPlayOver05FairOdds)
+      ? fixture.inPlayOver05FairOdds.map((step) => `<span class="odds-step">0-0 at ${step.minute}′ <b>${step.fairOdds ? step.fairOdds.toFixed(2) : '—'}</b></span>`).join('')
+      : '';
 
     return `<tr class="${rowClass}">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(dateLabel)}</span><strong>${escapeHtml(timeLabel)}</strong></td>
@@ -113,6 +119,9 @@ function renderFixtures(fixtures) {
           <div class="probability-top"><strong class="${tone}-text">${Math.round(probability)}%</strong><span>${probability >= 75 ? 'Higher' : probability >= 55 ? 'Moderate' : 'Lower'}</span></div>
           <div class="probability-track"><i class="${tone}" style="width:${probability}%"></i></div>
           ${signal}<div class="scoreline-list">${scorelines}</div>
+          <div class="first-goal-estimate">${escapeHtml(expectedMinute)}</div>
+          <div class="fair-odds-title">Model fair odds for Over 0.5 if still 0-0</div>
+          <div class="fair-odds-ladder">${oddsLadder}</div>
         </div>
       </td>
     </tr>`;

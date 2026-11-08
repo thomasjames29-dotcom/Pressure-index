@@ -42,8 +42,6 @@ export async function onRequestGet({ request, env }) {
         expectedGoals = await getExpectedGoals(entry.fixture.id, env.APIFOOTBALL_KEY).catch(() => null);
       }
 
-      const homeTeam = entry.teams?.home?.name || 'Home';
-      const awayTeam = entry.teams?.away?.name || 'Away';
       const modelExpectedGoals = expectedGoals ?? 1.65;
       const scorelines = buildScorelineSet(modelExpectedGoals);
       const over05Probability = estimateOver05(modelExpectedGoals);
@@ -53,13 +51,15 @@ export async function onRequestGet({ request, env }) {
       fixtures.push({
         fixtureId: String(entry.fixture.id),
         kickoff: entry.fixture.date,
-        homeTeam,
-        awayTeam,
+        homeTeam: entry.teams?.home?.name || 'Home',
+        awayTeam: entry.teams?.away?.name || 'Away',
         league: entry.league?.name || 'Competition',
         country: entry.league?.country || '',
         over05Probability,
         over15Probability,
         expectedTotalGoals: Number(modelExpectedGoals.toFixed(2)),
+        firstGoalExpectedMinute: expectedFirstGoalMinute(modelExpectedGoals),
+        inPlayOver05FairOdds: buildInPlayFairOddsLadder(modelExpectedGoals),
         highGoalPotential: over15Probability >= 60,
         probabilitySource: expectedGoals === null ? 'baseline' : 'provider prediction',
         scorelines,
@@ -109,6 +109,27 @@ function poissonProbability(goals, expected) {
   let factorial = 1;
   for (let i = 2; i <= goals; i += 1) factorial *= i;
   return Math.exp(-expected) * (expected ** goals) / factorial;
+}
+
+function expectedFirstGoalMinute(expectedGoals) {
+  // Mean time to first goal, conditional on at least one goal in 90 minutes,
+  // under the model's constant scoring-rate assumption.
+  if (expectedGoals <= 0.0001) return null;
+  const minute = (90 / expectedGoals) - (90 / Math.expm1(expectedGoals));
+  return Math.max(1, Math.min(89, Math.round(minute)));
+}
+
+function buildInPlayFairOddsLadder(expectedGoals) {
+  const minutes = [15, 30, 45, 60, 75];
+  return minutes.map((minute) => {
+    const remainingExpectedGoals = expectedGoals * (90 - minute) / 90;
+    const probability = 1 - Math.exp(-remainingExpectedGoals);
+    return {
+      minute,
+      probability: Math.round(probability * 1000) / 10,
+      fairOdds: probability > 0 ? Math.round((1 / probability) * 100) / 100 : null
+    };
+  });
 }
 
 async function getExpectedGoals(fixtureId, key) {
