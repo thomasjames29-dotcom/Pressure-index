@@ -22,8 +22,7 @@ function computeWindowLabel(day) {
   const map = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
   const today = `${map.year}-${map.month}-${map.day}`;
   const startDate = addDays(Number(map.hour) >= 8 ? today : addDays(today, -1), day);
-  const endDate = addDays(startDate, 1);
-  return `${formatWindowDate(startDate)} – ${formatWindowDate(endDate)}`;
+  return `${formatWindowDate(startDate)} – ${formatWindowDate(addDays(startDate, 1))}`;
 }
 
 function formatWindowDate(value) {
@@ -49,7 +48,7 @@ async function loadFixtures(day = activeDay) {
     likelySummary.textContent = `${fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length} likely over 0.5`;
     windowSummary.textContent = computeWindowLabel(day);
     notice.textContent = fixtures.length
-      ? `Showing ${fixtures.length} fixtures, kickoff ordered. Estimates use league scoring averages, team attack/defence and recent form${fixtures.some((fixture) => String(fixture.probabilitySource).includes('xG')) ? ', blended with available xG' : ''}. These are model estimates, not guarantees.`
+      ? `Showing ${fixtures.length} fixtures, kickoff ordered. First-goal timing and fair odds are model estimates, not live exchange prices.`
       : 'No upcoming fixtures were found in this 8am–8am window.';
     updatedAt.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     statusText.textContent = 'Analysis updated';
@@ -57,7 +56,9 @@ async function loadFixtures(day = activeDay) {
     statusText.textContent = 'Connection issue';
     notice.textContent = `Unable to load fixture analysis: ${error.message}`;
     body.innerHTML = `<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Fixture feed unavailable</strong><span>${escapeHtml(error.message)}</span></td></tr>`;
-  } finally { loading = false; }
+  } finally {
+    loading = false;
+  }
 }
 
 function setActiveTab() {
@@ -87,12 +88,14 @@ function renderFixtures(fixtures) {
     const alert = zeroZeroRisk
       ? '<span class="risk-label amber-label">0-0 among top scores</span>'
       : highGoal ? `<span class="risk-label green-label">Over 1.5 · ${Math.round(over15)}%</span>` : '';
-    const timing = Number.isFinite(Number(fixture.firstGoalExpectedMinute))
-      ? `Mean first-goal time: ${Math.round(fixture.firstGoalExpectedMinute)}′` : 'First-goal timing unavailable';
-    const odds = Array.isArray(fixture.inPlayOver05FairOdds) ? fixture.inPlayOver05FairOdds.map((step) =>
-      `<span class="odds-step">0-0 at ${step.minute}′ <b>${step.fairOdds ? step.fairOdds.toFixed(2) : '—'}</b></span>`).join('') : '';
     const basis = fixture.modelBasis || fixture.probabilitySource || 'Model estimate';
     const confidence = fixture.modelConfidence ? ` · ${fixture.modelConfidence} confidence` : '';
+    const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute)) ? Math.round(Number(fixture.firstGoalExpectedMinute)) : null;
+    const timing = expectedMinute === null ? 'First-goal timing unavailable' : `Expected first goal ~${expectedMinute}′`;
+    const targetOdds = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute))
+      ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute).toFixed(2) : '—';
+    const odds = Array.isArray(fixture.inPlayOver05FairOdds) ? fixture.inPlayOver05FairOdds.map((step) =>
+      `<span class="odds-step">0-0 at ${step.minute}′ <b>${step.fairOdds ? step.fairOdds.toFixed(2) : '—'}</b></span>`).join('') : '';
 
     return `<tr class="${rowClass}">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td>
@@ -103,8 +106,9 @@ function renderFixtures(fixtures) {
         <div class="probability-top"><strong class="${tone}-text">${Math.round(over05)}% · O0.5</strong><span>O1.5 ${Math.round(over15)}%</span></div>
         <div class="probability-track"><i class="${tone}" style="width:${over05}%"></i></div>
         ${alert}<div class="scoreline-list">${scorelines}</div>
-        <div class="first-goal-estimate">${escapeHtml(timing)}</div>
-        <div class="fair-odds-title">Model fair odds for Over 0.5 if still 0-0</div><div class="fair-odds-ladder">${odds}</div>
+        <div class="first-goal-callout"><span>${escapeHtml(timing)}</span><small>League baseline + match model</small></div>
+        <div class="expected-odds-callout"><span>Model fair odds if 0-0 then</span><strong>${targetOdds}</strong></div>
+        <div class="fair-odds-title">Indicative Over 0.5 fair odds if still 0-0</div><div class="fair-odds-ladder">${odds}</div>
       </div></td>
     </tr>`;
   }).join('');
