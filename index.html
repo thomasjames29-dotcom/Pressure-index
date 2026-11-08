@@ -34,60 +34,37 @@
   <main class="page">
     <section class="intro">
       <div>
-        <p class="eyebrow">NEXT 48 HOURS</p>
+        <p class="eyebrow">8AM MATCH WINDOWS</p>
         <h1>Find the <span>goal potential.</span></h1>
-        <p class="lede">A kickoff-ordered view of upcoming football, with a pre-match estimate for the chance of at least one goal.</p>
+        <p class="lede">Two separately analysed fixture windows, each running from 8am to 8am in your local timezone.</p>
       </div>
-      <div class="live-count">
-        <span id="matchCount">0</span>
-        <small>FIXTURES</small>
-      </div>
+      <div class="live-count"><span id="matchCount">0</span><small>FIXTURES</small></div>
     </section>
 
     <section class="summary-panel" aria-label="Fixture summary">
-      <div>
-        <strong>Time window</strong>
-        <span id="windowSummary">Next 48 hours</span>
-      </div>
-      <div>
-        <strong>Higher goal potential</strong>
-        <span id="likelySummary">0 fixtures</span>
-      </div>
+      <div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div>
+      <div><strong>Higher goal potential</strong><span id="likelySummary">0 fixtures</span></div>
     </section>
+
+    <nav class="day-tabs" role="tablist" aria-label="Fixture day">
+      <button class="day-tab active" id="currentTab" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button>
+      <button class="day-tab" id="nextTab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button>
+    </nav>
 
     <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
 
     <section class="table-card" aria-label="Upcoming fixture goal probability chart">
       <div class="table-heading">
-        <div>
-          <h2>Pre-match goal probability</h2>
-          <p>Every fixture in the next 48 hours · ordered by kickoff</p>
-        </div>
+        <div><h2>Pre-match goal probability</h2><p>Fixtures are ordered by local kickoff time</p></div>
         <div class="chart-legend"><span class="legend-swatch"></span> Over 0.5 goals</div>
       </div>
       <div class="table-wrap">
         <table>
-          <thead>
-            <tr>
-              <th>KICK-OFF</th>
-              <th>FIXTURE</th>
-              <th>COMPETITION</th>
-              <th>WINDOW</th>
-              <th class="probability-heading">OVER 0.5 GOALS</th>
-            </tr>
-          </thead>
-          <tbody id="matchesBody">
-            <tr>
-              <td colspan="5" class="empty-state">
-                <span class="empty-icon">⌁</span>
-                <strong>Loading upcoming fixtures</strong>
-                <span>Fetching the next 48 hours of football.</span>
-              </td>
-            </tr>
-          </tbody>
+          <thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>ANALYSIS SOURCE</th><th class="probability-heading">OVER 0.5 GOALS</th></tr></thead>
+          <tbody id="matchesBody"><tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Loading upcoming fixtures</strong><span>Fetching the selected 8am–8am window.</span></td></tr></tbody>
         </table>
       </div>
-      <div class="chart-footnote">Probability is an estimate based on available pre-match prediction data. It is not a guarantee or betting advice.</div>
+      <div class="chart-footnote">Probability scores are estimates, not guarantees or betting advice. Provider predictions are requested in small batches; a baseline is shown when a prediction is unavailable.</div>
     </section>
   </main>
 </body>

@@ -4,39 +4,65 @@ const notice = $('#notice');
 const statusText = $('#statusText');
 const updatedAt = $('#updatedAt');
 const matchCount = $('#matchCount');
-const windowSummary = $('#windowSummary');
 const likelySummary = $('#likelySummary');
+const windowSummary = $('#windowSummary');
+const tabButtons = [...document.querySelectorAll('[data-day]')];
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
+let activeDay = 0;
+let loading = false;
 
-async function loadFixtures() {
-  statusText.textContent = 'Fetching fixtures…';
+async function loadFixtures(day = activeDay) {
+  if (loading) return;
+  loading = true;
+  activeDay = day;
+  setActiveTab();
+  statusText.textContent = 'Fetching fixture batch…';
 
   try {
-    const response = await fetch('/api/fixtures', { headers: { Accept: 'application/json' } });
+    const url = `/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}`;
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
 
     const fixtures = Array.isArray(payload.fixtures) ? payload.fixtures : [];
     fixtures.sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
     const likelyCount = fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length;
-
     renderFixtures(fixtures);
     matchCount.textContent = String(fixtures.length);
     likelySummary.textContent = `${likelyCount} ${likelyCount === 1 ? 'fixture' : 'fixtures'}`;
+
+    if (payload.window?.start && payload.window?.end) {
+      const start = new Date(payload.window.start);
+      const end = new Date(payload.window.end);
+      const fmt = (date) => date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      windowSummary.textContent = `${fmt(start)} – ${fmt(end)}`;
+    }
+
     notice.textContent = fixtures.length
-      ? `Showing all ${fixtures.length} fixtures in the next 48 hours, ordered by local kickoff time.`
-      : 'No fixtures were returned for the next 48 hours.';
+      ? `Showing ${fixtures.length} fixtures for this 8am–8am window, sorted by local kickoff. Some scores may use the baseline estimate when provider prediction data is unavailable.`
+      : 'No upcoming fixtures were found in this 8am–8am window.';
     updatedAt.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    statusText.textContent = 'Fixture analysis updated';
+    statusText.textContent = 'Analysis updated';
   } catch (error) {
     statusText.textContent = 'Connection issue';
     notice.textContent = `Unable to load fixture analysis: ${error.message}`;
     body.innerHTML = `<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Fixture feed unavailable</strong><span>${escapeHtml(error.message)}</span></td></tr>`;
+  } finally {
+    loading = false;
   }
+}
+
+function setActiveTab() {
+  tabButtons.forEach((button) => {
+    const selected = Number(button.dataset.day) === activeDay;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
 }
 
 function renderFixtures(fixtures) {
   if (!fixtures.length) {
-    body.innerHTML = '<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>No fixtures in range</strong><span>Check again later for matches in the next 48 hours.</span></td></tr>';
+    body.innerHTML = '<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>No fixtures in this window</strong><span>Check the next-day tab or come back later.</span></td></tr>';
     return;
   }
 
@@ -46,15 +72,13 @@ function renderFixtures(fixtures) {
     const tone = probability >= 75 ? 'high' : probability >= 55 ? 'medium' : 'low';
     const timeLabel = kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const dateLabel = kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    const windowLabel = (kickoff.getTime() - Date.now()) <= 24 * 60 * 60 * 1000 ? '0–24 hours' : '24–48 hours';
-    const width = Math.max(0, Math.min(100, probability));
-
+    const source = fixture.probabilitySource === 'provider prediction' ? 'Match prediction' : 'Baseline estimate';
     return `<tr class="fixture-row">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(dateLabel)}</span><strong>${escapeHtml(timeLabel)}</strong></td>
       <td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td>
       <td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td>
-      <td class="window-cell">${windowLabel}</td>
-      <td class="probability-cell"><div class="probability-chart" role="img" aria-label="${probability}% estimated chance of over 0.5 goals"><div class="probability-top"><strong class="${tone}-text">${probability}%</strong><span>${probability >= 70 ? 'Higher' : probability >= 55 ? 'Moderate' : 'Lower'}</span></div><div class="probability-track"><i class="${tone}" style="width:${width}%"></i></div></div></td>
+      <td class="window-cell">${escapeHtml(source)}</td>
+      <td class="probability-cell"><div class="probability-chart" role="img" aria-label="${probability}% estimated chance of over 0.5 goals"><div class="probability-top"><strong class="${tone}-text">${probability}%</strong><span>${probability >= 75 ? 'Higher' : probability >= 55 ? 'Moderate' : 'Lower'}</span></div><div class="probability-track"><i class="${tone}" style="width:${probability}%"></i></div></div></td>
     </tr>`;
   }).join('');
 }
@@ -69,5 +93,7 @@ function escapeHtml(value) {
   }[char]));
 }
 
-loadFixtures();
-window.setInterval(loadFixtures, 5 * 60_000);
+tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
+loadFixtures(0);
+// Re-evaluate the rolling 8am day boundary and refresh the currently selected window.
+window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
