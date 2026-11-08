@@ -14,30 +14,27 @@ let loading = false;
 function computeWindowLabel(day) {
   const now = new Date();
   const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', hourCycle: 'h23'
   }).formatToParts(now);
   const map = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
   const currentDate = `${map.year}-${map.month}-${map.day}`;
   const baseDate = Number(map.hour) >= 8 ? currentDate : addCalendarDays(currentDate, -1);
   const startDate = addCalendarDays(baseDate, day);
   const endDate = addCalendarDays(startDate, 1);
-  const formatter = (dateString) => {
-    const date = new Date(`${dateString}T08:00:00Z`);
-    return date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  };
-  return `${formatter(startDate)} – ${formatter(endDate)}`;
+  return `${formatWindowDate(startDate)} – ${formatWindowDate(endDate)}`;
+}
+
+function formatWindowDate(dateString) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, 8));
+  return new Intl.DateTimeFormat([], { timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' }).format(date);
 }
 
 function addCalendarDays(dateString, amount) {
   const [year, month, day] = dateString.split('-').map(Number);
-  const d = new Date(Date.UTC(year, month - 1, day + amount));
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  const date = new Date(Date.UTC(year, month - 1, day + amount));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 
 async function loadFixtures(day = activeDay) {
@@ -46,24 +43,20 @@ async function loadFixtures(day = activeDay) {
   activeDay = day;
   setActiveTab();
   statusText.textContent = 'Fetching fixture batch…';
-
   try {
-    const url = `/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}`;
-    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    const response = await fetch(`/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}`, { headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
 
     const fixtures = Array.isArray(payload.fixtures) ? payload.fixtures : [];
     fixtures.sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
     const likelyCount = fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length;
-
     renderFixtures(fixtures);
     matchCount.textContent = String(fixtures.length);
     likelySummary.textContent = `${likelyCount} ${likelyCount === 1 ? 'fixture' : 'fixtures'}`;
     windowSummary.textContent = computeWindowLabel(day);
-
     notice.textContent = fixtures.length
-      ? `Showing ${fixtures.length} fixtures for this 8am–8am window, sorted by local kickoff. Some scores may use a baseline estimate when provider prediction data is unavailable.`
+      ? `Showing ${fixtures.length} fixtures for this 8am–8am window, sorted by local kickoff. Green outlines indicate a model-estimated 60%+ chance of over 1.5 goals; amber indicates 0-0 is among the top three scorelines.`
       : 'No upcoming fixtures were found in this 8am–8am window.';
     updatedAt.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     statusText.textContent = 'Analysis updated';
@@ -93,23 +86,33 @@ function renderFixtures(fixtures) {
   body.innerHTML = fixtures.map((fixture) => {
     const kickoff = new Date(fixture.kickoff);
     const probability = clamp(Number(fixture.over05Probability), 0, 100);
+    const over15 = clamp(Number(fixture.over15Probability), 0, 100);
     const tone = probability >= 75 ? 'high' : probability >= 55 ? 'medium' : 'low';
     const timeLabel = kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const dateLabel = kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
     const source = fixture.probabilitySource === 'provider prediction' ? 'Match prediction' : 'Baseline estimate';
-    const scorelines = Array.isArray(fixture.scorelines) ? fixture.scorelines.map((scoreline) => `<span class="scoreline-pill ${scoreline.label === '0-0' ? 'amber' : ''}">${escapeHtml(scoreline.label)} <b>${Math.round(scoreline.probability)}%</b></span>`).join('') : '';
-    const cardClass = fixture.zeroZeroRisk ? 'fixture-card zerozero' : 'fixture-card';
+    const zeroZeroRisk = Boolean(fixture.zeroZeroRisk);
+    const highGoalPotential = Boolean(fixture.highGoalPotential);
+    const rowClass = zeroZeroRisk ? 'fixture-row zerozero' : highGoalPotential ? 'fixture-row high-goal' : 'fixture-row';
+    const scorelines = Array.isArray(fixture.scorelines)
+      ? fixture.scorelines.map((scoreline) => `<span class="scoreline-pill ${scoreline.label === '0-0' ? 'amber' : ''}">${escapeHtml(scoreline.label)} <b>${Math.round(scoreline.probability)}%</b></span>`).join('')
+      : '';
+    const signal = zeroZeroRisk
+      ? '<span class="risk-label amber-label">0-0 risk</span>'
+      : highGoalPotential
+        ? `<span class="risk-label green-label">Over 1.5 model · ${Math.round(over15)}%</span>`
+        : '';
 
-    return `<tr class="${cardClass}">
+    return `<tr class="${rowClass}">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(dateLabel)}</span><strong>${escapeHtml(timeLabel)}</strong></td>
       <td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td>
       <td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td>
       <td class="window-cell">${escapeHtml(source)}</td>
       <td class="probability-cell">
-        <div class="probability-chart" role="img" aria-label="${Math.round(probability)}% estimated chance of over 0.5 goals">
+        <div class="probability-chart" aria-label="${Math.round(probability)}% estimated chance of over 0.5 goals">
           <div class="probability-top"><strong class="${tone}-text">${Math.round(probability)}%</strong><span>${probability >= 75 ? 'Higher' : probability >= 55 ? 'Moderate' : 'Lower'}</span></div>
           <div class="probability-track"><i class="${tone}" style="width:${probability}%"></i></div>
-          <div class="scoreline-list">${scorelines}</div>
+          ${signal}<div class="scoreline-list">${scorelines}</div>
         </div>
       </td>
     </tr>`;
