@@ -96,6 +96,10 @@ function renderFixtures(fixtures) {
       ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute).toFixed(2) : '—';
     const odds = Array.isArray(fixture.inPlayOver05FairOdds) ? fixture.inPlayOver05FairOdds.map((step) =>
       `<span class="odds-step">0-0 at ${step.minute}′ <b>${step.fairOdds ? step.fairOdds.toFixed(2) : '—'}</b></span>`).join('') : '';
+    const orderRecommendation = fixture.orderRecommendation || null;
+    const recommendationText = orderRecommendation && Number.isFinite(Number(orderRecommendation.targetOdds))
+      ? `<div class="recommended-order-callout"><span>Best 0-0 order</span><strong>${orderRecommendation.minute}′ @ ${Number(orderRecommendation.targetOdds).toFixed(2)}</strong><small>EV ${Number(orderRecommendation.expectedValue).toFixed(3)}</small></div>`
+      : '';
 
     return `<tr class="${rowClass}">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td>
@@ -108,6 +112,7 @@ function renderFixtures(fixtures) {
         ${alert}<div class="scoreline-list">${scorelines}</div>
         <div class="first-goal-callout"><span>${escapeHtml(timing)}</span><small>League baseline + match model</small></div>
         <div class="expected-odds-callout"><span>Model fair odds if 0-0 then</span><strong>${targetOdds}</strong></div>
+        ${recommendationText}
         <div class="fair-odds-title">Indicative Over 0.5 fair odds if still 0-0</div><div class="fair-odds-ladder">${odds}</div>
       </div></td>
     </tr>`;
