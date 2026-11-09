@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="goal-timing.css">
   <link rel="stylesheet" href="model-analysis.css">
+  <link rel="stylesheet" href="match-card-summary.css">
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -23,13 +24,13 @@
   </header>
   <main class="page">
     <section class="intro"><div><p class="eyebrow">8AM MATCH WINDOWS</p><h1>Find the <span>goal potential.</span></h1><p class="lede">Two separately analysed fixture windows, each spanning 8am to 8am in your local timezone.</p></div><div class="live-count"><span id="matchCount">0</span><small>FIXTURES</small></div></section>
-    <section class="summary-panel" aria-label="Fixture summary"><div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div><div><strong>Higher goal potential</strong><span id="likelySummary">0 fixtures</span></div></section>
+    <section class="summary-panel" aria-label="Fixture summary"><div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div><div><strong>Higher goal potential</strong><span id="likelySummary">0 likely over 0.5</span></div></section>
     <nav class="day-tabs" role="tablist" aria-label="Fixture day"><button class="day-tab active" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button><button class="day-tab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button></nav>
     <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
     <section class="table-card" aria-label="Upcoming fixture goal probability chart">
-      <div class="table-heading"><div><h2>Pre-match goal probability</h2><p>Fixtures ordered by local kickoff · league and team-based estimates</p></div><div class="chart-legend"><span class="legend-swatch"></span> Over 0.5 goals</div></div>
-      <div class="table-wrap"><table><thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>MODEL BASIS</th><th class="probability-heading">GOAL PROBABILITY</th></tr></thead><tbody id="matchesBody"><tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Loading upcoming fixtures</strong><span>Fetching the selected 8am–8am window.</span></td></tr></tbody></table></div>
-      <div class="chart-footnote">Estimates use league scoring averages, team attack/defence and recent form; xG is blended only when available from provider data. Fair odds are model calculations, not live exchange prices. Model quality is not independently calibrated.</div>
+      <div class="table-heading"><div><h2>Pre-match goal probability</h2><p>Fixtures ordered by local kickoff · league and team-based estimates</p></div><div class="chart-legend"><span class="legend-swatch legend-high"></span>High chance <span class="legend-swatch legend-medium"></span>Moderate <span class="legend-swatch legend-low"></span>Lower</div></div>
+      <div class="table-wrap"><table><thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>MODEL BASIS</th><th class="probability-heading">GOAL PROBABILITY</th></tr></thead><tbody id="matchesBody"></tbody></table></div>
+      <div class="chart-footnote">Estimates use league scoring averages, team attack/defence and recent form; xG is blended only when available from provider data. Fair odds are model calculations for expected-goal timings, not live pricing.</div>
     </section>
   </main>
 </body>
