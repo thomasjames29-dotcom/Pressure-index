@@ -54,6 +54,7 @@ export async function onRequestGet({ request, env }) {
       const leagueFirstGoalBaselineMinute = expectedFirstGoalMinute(table?.averageTotalGoals || 2.65);
       const matchFirstGoalMinute = expectedFirstGoalMinute(total);
       const expectedMinute = blendFirstGoalMinute(matchFirstGoalMinute, leagueFirstGoalBaselineMinute);
+      const orderRecommendation = buildOrderRecommendation(total, expectedMinute || 45);
 
       return {
         fixtureId: String(item.fixture.id),
@@ -75,7 +76,8 @@ export async function onRequestGet({ request, env }) {
         modelBasis: model.basis,
         modelConfidence: model.confidence,
         scorelines,
-        zeroZeroRisk: scorelines.some((scoreline) => scoreline.label === '0-0')
+        zeroZeroRisk: scorelines.some((scoreline) => scoreline.label === '0-0'),
+        orderRecommendation
       };
     });
 
@@ -250,6 +252,66 @@ function buildInPlayFairOddsLadder(expectedGoals) {
     const probability = probabilityAtLeastOne(remaining);
     return { minute, probability: round(probability * 100, 1), fairOdds: probability > 0 ? round(1 / probability, 2) : null };
   });
+}
+
+function buildOrderRecommendation(expectedGoals, minute, config = {}) {
+  const lossRate = Number.isFinite(config.lossRate) ? config.lossRate : 0.20;
+  const commissionRate = Number.isFinite(config.commissionRate) ? config.commissionRate : 0.05;
+  const minuteSteps = Array.isArray(config.minutes) ? config.minutes : [15, 30, 45, 60, 75];
+
+  const candidates = minuteSteps.map((step) => {
+    const remaining = expectedGoals * (90 - step) / 90;
+    const probability = probabilityAtLeastOne(remaining);
+    const fairOdds = probability > 0 ? round(1 / probability, 2) : null;
+
+    const breakEvenOdds = probability > 0
+      ? round((1 - lossRate) / probability + (1 - lossRate) / (probability * (1 - commissionRate)) - 1, 2)
+      : null;
+
+    const targetOdds = fairOdds !== null && breakEvenOdds !== null ? round(Math.max(fairOdds, breakEvenOdds), 2) : null;
+    const expectedValue = targetOdds !== null && probability > 0
+      ? round((probability * (targetOdds - 1) * (1 - commissionRate)) - (1 - probability) - lossRate, 3)
+      : null;
+
+    return {
+      minute: step,
+      fairOdds,
+      breakEvenOdds,
+      targetOdds,
+      probability: round(probability * 100, 1),
+      expectedValue,
+      riskAdjustedProbability: round((probability - lossRate) * 100, 1)
+    };
+  }).filter((candidate) => candidate.targetOdds !== null && candidate.expectedValue !== null && candidate.expectedValue > 0);
+
+  const best = candidates.sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue))[0];
+
+  if (!best) {
+    return {
+      minute: null,
+      fairOdds: null,
+      breakEvenOdds: null,
+      targetOdds: null,
+      expectedValue: null,
+      strategy: 'No profitable 0-0 over 0.5 order under the current risk assumptions.'
+    };
+  }
+
+  const chosenMinute = Number.isFinite(minute) ? minute : best.minute;
+  const selected = candidates.find((candidate) => candidate.minute === chosenMinute) || best;
+
+  return {
+    minute: selected.minute,
+    fairOdds: selected.fairOdds,
+    breakEvenOdds: selected.breakEvenOdds,
+    targetOdds: selected.targetOdds,
+    expectedValue: selected.expectedValue,
+    probability: selected.probability,
+    riskAdjustedProbability: selected.riskAdjustedProbability,
+    lossRate,
+    commissionRate,
+    strategy: 'Back over 0.5 only if the matched odds are at least the target threshold while the score remains 0-0.'
+  };
 }
 
 function number(value) { const result = Number(value); return Number.isFinite(result) ? result : null; }
