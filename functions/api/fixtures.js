@@ -257,43 +257,51 @@ function buildInPlayFairOddsLadder(expectedGoals) {
 function buildOrderRecommendation(expectedGoals, minute, config = {}) {
   const lossRate = Number.isFinite(config.lossRate) ? config.lossRate : 0.20;
   const commissionRate = Number.isFinite(config.commissionRate) ? config.commissionRate : 0.05;
+  const minEv = Number.isFinite(config.minEv) ? config.minEv : 0.02;
+  const minKelly = Number.isFinite(config.minKelly) ? config.minKelly : 0.005;
   const minuteSteps = Array.isArray(config.minutes) ? config.minutes : [15, 30, 45, 60, 75];
 
   const candidates = minuteSteps.map((step) => {
     const remaining = expectedGoals * (90 - step) / 90;
     const probability = probabilityAtLeastOne(remaining);
     const fairOdds = probability > 0 ? round(1 / probability, 2) : null;
-
-    const breakEvenOdds = probability > 0
-      ? round((1 - lossRate) / probability + (1 - lossRate) / (probability * (1 - commissionRate)) - 1, 2)
+    const targetOdds = fairOdds !== null ? round(Math.max(fairOdds, 1.35), 2) : null;
+    const adjustedWinProbability = clamp(probability - lossRate, 0.01, 0.99);
+    const netOdds = targetOdds !== null ? round(targetOdds * (1 - commissionRate), 2) : null;
+    const expectedValue = targetOdds !== null && netOdds !== null
+      ? round((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability) - lossRate, 3)
       : null;
-
-    const targetOdds = fairOdds !== null && breakEvenOdds !== null ? round(Math.max(fairOdds, breakEvenOdds), 2) : null;
-    const expectedValue = targetOdds !== null && probability > 0
-      ? round((probability * (targetOdds - 1) * (1 - commissionRate)) - (1 - probability) - lossRate, 3)
+    const kellyFraction = targetOdds !== null && netOdds !== null && netOdds > 1
+      ? round(Math.max(0, ((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability) - lossRate) / (netOdds - 1)), 4)
       : null;
 
     return {
       minute: step,
       fairOdds,
-      breakEvenOdds,
       targetOdds,
-      probability: round(probability * 100, 1),
       expectedValue,
-      riskAdjustedProbability: round((probability - lossRate) * 100, 1)
+      kellyFraction,
+      probability: round(probability * 100, 1),
+      riskAdjustedProbability: round(adjustedWinProbability * 100, 1),
+      lossRate,
+      commissionRate
     };
-  }).filter((candidate) => candidate.targetOdds !== null && candidate.expectedValue !== null && candidate.expectedValue > 0);
+  }).filter((candidate) => candidate.targetOdds !== null && Number.isFinite(candidate.expectedValue) && candidate.expectedValue > minEv && candidate.kellyFraction > minKelly);
 
-  const best = candidates.sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue))[0];
+  const best = candidates.sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue) || Number(b.kellyFraction) - Number(a.kellyFraction))[0];
 
   if (!best) {
     return {
       minute: null,
       fairOdds: null,
-      breakEvenOdds: null,
       targetOdds: null,
       expectedValue: null,
-      strategy: 'No profitable 0-0 over 0.5 order under the current risk assumptions.'
+      kellyFraction: null,
+      probability: null,
+      riskAdjustedProbability: null,
+      lossRate,
+      commissionRate,
+      strategy: 'No profitable edge under the current loss and commission assumptions.'
     };
   }
 
@@ -303,14 +311,14 @@ function buildOrderRecommendation(expectedGoals, minute, config = {}) {
   return {
     minute: selected.minute,
     fairOdds: selected.fairOdds,
-    breakEvenOdds: selected.breakEvenOdds,
     targetOdds: selected.targetOdds,
     expectedValue: selected.expectedValue,
+    kellyFraction: selected.kellyFraction,
     probability: selected.probability,
     riskAdjustedProbability: selected.riskAdjustedProbability,
     lossRate,
     commissionRate,
-    strategy: 'Back over 0.5 only if the matched odds are at least the target threshold while the score remains 0-0.'
+    strategy: 'Back the best 0-0 over 0.5 order only when the matched price clears the profit-maximizing threshold.'
   };
 }
 
