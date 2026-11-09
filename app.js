@@ -17,6 +17,26 @@ function addDays(value, amount) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 
+function getCurrentWindowDay() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date());
+
+  const map = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value])
+  );
+
+  const hour = Number(map.hour || 0);
+  return hour >= 8 ? 0 : 1;
+}
+
 function computeWindowLabel(day) {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
   const map = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
@@ -31,11 +51,22 @@ function formatWindowDate(value) {
     .format(new Date(Date.UTC(year, month - 1, day, 8)));
 }
 
+function syncWindowState() {
+  const resolvedDay = getCurrentWindowDay();
+  if (resolvedDay !== activeDay) {
+    activeDay = resolvedDay;
+    setActiveTab();
+  }
+}
+
 async function loadFixtures(day = activeDay) {
   if (loading) return;
   loading = true;
+
+  syncWindowState();
   activeDay = day;
   setActiveTab();
+
   statusText.textContent = 'Updating fixture analysis…';
   try {
     const response = await fetch(`/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}`, { headers: { Accept: 'application/json' } });
@@ -119,6 +150,16 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
+function syncAndRefreshWindow() {
+  const resolvedDay = getCurrentWindowDay();
+  if (resolvedDay !== activeDay) {
+    activeDay = resolvedDay;
+    loadFixtures(activeDay);
+    return;
+  }
+  loadFixtures(activeDay);
+}
+
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
 loadFixtures(0);
-window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
+window.setInterval(syncAndRefreshWindow, 60_000);
