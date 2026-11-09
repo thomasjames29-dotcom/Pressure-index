@@ -69,6 +69,20 @@ function setActiveTab() {
   });
 }
 
+function getFixtureDecision({ fairOddsAtExpectedMinute, maxProfitOdds, evValue }) {
+  const fairOdds = Number.isFinite(Number(fairOddsAtExpectedMinute)) ? Number(fairOddsAtExpectedMinute) : 0;
+  const maxProfit = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds) : 0;
+  const ev = Number.isFinite(Number(evValue)) ? Number(evValue) : 0;
+
+  if (ev > 0.04 && maxProfit >= 1.4) {
+    return { className: 'action-green', label: 'Back', detail: 'Strong edge' };
+  }
+  if (ev > -0.04 || maxProfit >= 1.2 || fairOdds >= 1.8) {
+    return { className: 'action-amber', label: 'Caution', detail: 'Monitor price' };
+  }
+  return { className: 'action-red', label: 'Avoid', detail: 'No edge' };
+}
+
 function renderFixtures(fixtures) {
   if (!fixtures.length) {
     body.innerHTML = '<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>No fixtures in this window</strong><span>Check the next-day tab or come back later.</span></td></tr>';
@@ -77,44 +91,39 @@ function renderFixtures(fixtures) {
 
   body.innerHTML = fixtures.map((fixture) => {
     const kickoff = new Date(fixture.kickoff);
-    const over05 = clamp(Number(fixture.over05Probability), 0, 100);
-    const over15 = clamp(Number(fixture.over15Probability), 0, 100);
-    const tone = over05 >= 75 ? 'high' : over05 >= 55 ? 'medium' : 'low';
-    const zeroZeroRisk = Boolean(fixture.zeroZeroRisk);
-    const highGoal = Boolean(fixture.highGoalPotential);
-    const rowClass = zeroZeroRisk ? 'fixture-row zerozero' : highGoal ? 'fixture-row high-goal' : 'fixture-row';
-    const scorelines = Array.isArray(fixture.scorelines) ? fixture.scorelines.map((score) =>
-      `<span class="scoreline-pill ${score.label === '0-0' ? 'amber' : ''}">${escapeHtml(score.label)} <b>${Math.round(score.probability)}%</b></span>`).join('') : '';
-    const alert = zeroZeroRisk
-      ? '<span class="risk-label amber-label">0-0 among top scores</span>'
-      : highGoal ? `<span class="risk-label green-label">Over 1.5 · ${Math.round(over15)}%</span>` : '';
     const basis = fixture.modelBasis || fixture.probabilitySource || 'Model estimate';
     const confidence = fixture.modelConfidence ? ` · ${fixture.modelConfidence} confidence` : '';
-    const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute)) ? Math.round(Number(fixture.firstGoalExpectedMinute)) : null;
-    const timing = expectedMinute === null ? 'First-goal timing unavailable' : `Expected first goal ~${expectedMinute}′`;
-    const targetOdds = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute))
-      ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute).toFixed(2) : '—';
-    const odds = Array.isArray(fixture.inPlayOver05FairOdds) ? fixture.inPlayOver05FairOdds.map((step) =>
-      `<span class="odds-step">0-0 at ${step.minute}′ <b>${step.fairOdds ? step.fairOdds.toFixed(2) : '—'}</b></span>`).join('') : '';
-    const orderRecommendation = fixture.orderRecommendation || null;
-    const recommendationText = orderRecommendation && Number.isFinite(Number(orderRecommendation.targetOdds))
-      ? `<div class="recommended-order-callout"><span>Best 0-0 order</span><strong>${orderRecommendation.minute}′ @ ${Number(orderRecommendation.targetOdds).toFixed(2)}</strong><small>EV ${Number(orderRecommendation.expectedValue).toFixed(3)}</small></div>`
-      : '';
 
-    return `<tr class="${rowClass}">
+    const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute)) ? Math.round(Number(fixture.firstGoalExpectedMinute)) : null;
+    const fairOddsAtExpectedMinute = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute)) ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute) : null;
+    const maxProfitOdds = Number.isFinite(Number(fixture.orderRecommendation?.targetOdds)) ? Number(fixture.orderRecommendation.targetOdds) : fairOddsAtExpectedMinute;
+    const evValue = Number.isFinite(Number(fixture.orderRecommendation?.expectedValue)) ? Number(fixture.orderRecommendation.expectedValue) : null;
+
+    const decision = getFixtureDecision({ fairOddsAtExpectedMinute, maxProfitOdds, evValue });
+    const firstGoalTime = expectedMinute === null ? '—' : `~${expectedMinute}'`;
+    const fairOddsText = fairOddsAtExpectedMinute === null ? '—' : fairOddsAtExpectedMinute.toFixed(2);
+    const maxProfitText = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds).toFixed(2) : '—';
+    const evText = evValue === null ? '—' : `${evValue >= 0 ? '+' : ''}${evValue.toFixed(3)}`;
+
+    return `<tr class="fixture-row ${decision.className}">
       <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td>
       <td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td>
       <td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td>
       <td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td>
-      <td class="probability-cell"><div class="probability-chart" aria-label="${Math.round(over05)}% estimated chance of over 0.5 goals">
-        <div class="probability-top"><strong class="${tone}-text">${Math.round(over05)}% · O0.5</strong><span>O1.5 ${Math.round(over15)}%</span></div>
-        <div class="probability-track"><i class="${tone}" style="width:${over05}%"></i></div>
-        ${alert}<div class="scoreline-list">${scorelines}</div>
-        <div class="first-goal-callout"><span>${escapeHtml(timing)}</span><small>League baseline + match model</small></div>
-        <div class="expected-odds-callout"><span>Model fair odds if 0-0 then</span><strong>${targetOdds}</strong></div>
-        ${recommendationText}
-        <div class="fair-odds-title">Indicative Over 0.5 fair odds if still 0-0</div><div class="fair-odds-ladder">${odds}</div>
-      </div></td>
+      <td class="probability-cell">
+        <div class="decision-card ${decision.className}">
+          <div class="decision-header">
+            <span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span>
+            <span class="decision-detail">${escapeHtml(decision.detail)}</span>
+          </div>
+          <div class="decision-metrics">
+            <div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div>
+            <div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div>
+            <div class="stat-block"><span>Max profit odds</span><strong>${escapeHtml(maxProfitText)}</strong></div>
+            <div class="stat-block"><span>EV odds</span><strong>${escapeHtml(evText)}</strong></div>
+          </div>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 }
@@ -127,3 +136,4 @@ function escapeHtml(value) {
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
 loadFixtures(0);
 window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
+
