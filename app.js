@@ -7,7 +7,22 @@ const matchCount = $('#matchCount');
 const likelySummary = $('#likelySummary');
 const windowSummary = $('#windowSummary');
 const tabButtons = [...document.querySelectorAll('[data-day]')];
+const viewButtons = [...document.querySelectorAll('[data-view]')];
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
+const STATS_STORAGE_KEY = 'pressure-index-first-goal-stats';
+const statsDaySelect = $('#statsDaySelect');
+const statsSummary = $('#statsSummary');
+const stats7DaySummary = $('#stats7DaySummary');
+const stats30DaySummary = $('#stats30DaySummary');
+const saveStatsButton = $('#saveStatsButton');
+const clearStatsButton = $('#clearStatsButton');
+const STATS_FIELDS = {
+  noGoals: $('#statsNoGoals'),
+  min0To20: $('#stats0To20'),
+  min21ToHalftime: $('#stats21ToHalftime'),
+  min45To75: $('#stats45To75'),
+  min76ToFinish: $('#stats76ToFinish')
+};
 let activeDay = 0;
 let loading = false;
 
@@ -29,6 +44,189 @@ function formatWindowDate(value) {
   const [year, month, day] = value.split('-').map(Number);
   return new Intl.DateTimeFormat([], { timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' })
     .format(new Date(Date.UTC(year, month - 1, day, 8)));
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatStatsDate(dateString) {
+  const date = new Date(`${dateString}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? dateString : date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function readStoredStats() {
+  try {
+    const payload = localStorage.getItem(STATS_STORAGE_KEY);
+    return payload ? JSON.parse(payload) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredStats(stats) {
+  localStorage.setItem(STATS_STORAGE_KEY, JSON.stringify(stats));
+}
+
+function getDefaultStats() {
+  return {
+    noGoals: 0,
+    min0To20: 0,
+    min21ToHalftime: 0,
+    min45To75: 0,
+    min76ToFinish: 0
+  };
+}
+
+function getStatsForDate(date) {
+  const payload = readStoredStats();
+  return { ...getDefaultStats(), ...(payload[date] || {}) };
+}
+
+function sumStats(statsMap) {
+  const total = getDefaultStats();
+  Object.values(statsMap).forEach((stats) => {
+    total.noGoals += Number(stats.noGoals || 0);
+    total.min0To20 += Number(stats.min0To20 || 0);
+    total.min21ToHalftime += Number(stats.min21ToHalftime || 0);
+    total.min45To75 += Number(stats.min45To75 || 0);
+    total.min76ToFinish += Number(stats.min76ToFinish || 0);
+  });
+  return total;
+}
+
+function getRecentDateRange(days) {
+  const today = new Date();
+  const from = new Date(today);
+  from.setDate(from.getDate() - (days - 1));
+  from.setHours(0, 0, 0, 0);
+  return from;
+}
+
+function buildRecentSummary(days) {
+  const stats = readStoredStats();
+  const cutoff = getRecentDateRange(days);
+  const selected = Object.entries(stats).filter(([date]) => {
+    const dateValue = new Date(`${date}T12:00:00`);
+    return !Number.isNaN(dateValue.getTime()) && dateValue >= cutoff;
+  });
+
+  if (!selected.length) {
+    return 'No data recorded in this range.';
+  }
+
+  const totals = sumStats(Object.fromEntries(selected));
+  return [
+    `Goalless ${totals.noGoals}`,
+    `0–20 ${totals.min0To20}`,
+    `21–HT ${totals.min21ToHalftime}`,
+    `45–75 ${totals.min45To75}`,
+    `76–FT ${totals.min76ToFinish}`
+  ].join(' · ');
+}
+
+function updateStatsSummary(date) {
+  const stats = getStatsForDate(date);
+  const total = Object.values(stats).reduce((sum, value) => sum + Number(value || 0), 0);
+  if (!total) {
+    statsSummary.textContent = `No stats recorded for ${formatStatsDate(date)} yet.`;
+    return;
+  }
+
+  const rows = [
+    `Goalless: ${stats.noGoals}`,
+    `0–20: ${stats.min0To20}`,
+    `21–HT: ${stats.min21ToHalftime}`,
+    `45–75: ${stats.min45To75}`,
+    `76–FT: ${stats.min76ToFinish}`
+  ];
+  statsSummary.textContent = `${formatStatsDate(date)} — ${rows.join(' · ')}`;
+}
+
+function renderStatsSummaryPanels() {
+  if (!stats7DaySummary || !stats30DaySummary) return;
+  stats7DaySummary.textContent = buildRecentSummary(7);
+  stats30DaySummary.textContent = buildRecentSummary(30);
+}
+
+function populateStatsInputs(date) {
+  if (!date) return;
+  const stats = getStatsForDate(date);
+  Object.entries(STATS_FIELDS).forEach(([key, input]) => {
+    const actualKey = key === 'noGoals' ? 'noGoals' : key;
+    input.value = Number(stats[actualKey] || 0);
+  });
+  updateStatsSummary(date);
+}
+
+function renderStatsOptions() {
+  if (!statsDaySelect) return;
+  const allStats = readStoredStats();
+  const recordedDays = Object.keys(allStats).sort((a, b) => new Date(b) - new Date(a));
+  const today = getLocalDateKey();
+  const options = [...new Set([today, ...recordedDays])];
+
+  statsDaySelect.innerHTML = options.map((date) => (
+    `<option value="${date}">${formatStatsDate(date)}</option>`
+  )).join('');
+
+  const selectedDate = options.includes(statsDaySelect.value) ? statsDaySelect.value : today;
+  statsDaySelect.value = selectedDate;
+  populateStatsInputs(selectedDate);
+  renderStatsSummaryPanels();
+}
+
+function saveSelectedDayStats() {
+  const date = statsDaySelect.value || getLocalDateKey();
+  const stats = readStoredStats();
+  stats[date] = {
+    noGoals: Number(STATS_FIELDS.noGoals.value || 0),
+    min0To20: Number(STATS_FIELDS.min0To20.value || 0),
+    min21ToHalftime: Number(STATS_FIELDS.min21ToHalftime.value || 0),
+    min45To75: Number(STATS_FIELDS.min45To75.value || 0),
+    min76ToFinish: Number(STATS_FIELDS.min76ToFinish.value || 0)
+  };
+  writeStoredStats(stats);
+  renderStatsOptions();
+  populateStatsInputs(date);
+}
+
+function clearSelectedDayStats() {
+  const date = statsDaySelect.value || getLocalDateKey();
+  const stats = readStoredStats();
+  delete stats[date];
+  writeStoredStats(stats);
+  renderStatsOptions();
+  const nextDate = statsDaySelect.value || getLocalDateKey();
+  populateStatsInputs(nextDate);
+}
+
+function setActiveView(viewName) {
+  const panels = document.querySelectorAll('.view-panel');
+  panels.forEach((panel) => {
+    const isActive = panel.id === `${viewName}View`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+
+  viewButtons.forEach((button) => {
+    button.classList.toggle('active', button.dataset.view === viewName);
+  });
+}
+
+function setupStatsControls() {
+  if (!statsDaySelect || !statsSummary || !saveStatsButton || !clearStatsButton) return;
+
+  statsDaySelect.addEventListener('change', (event) => {
+    populateStatsInputs(event.target.value);
+  });
+
+  saveStatsButton.addEventListener('click', saveSelectedDayStats);
+  clearStatsButton.addEventListener('click', clearSelectedDayStats);
+  renderStatsOptions();
 }
 
 async function loadFixtures(day = activeDay) {
@@ -133,7 +331,16 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
-tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
+if (viewButtons.length) {
+  viewButtons.forEach((button) => {
+    button.addEventListener('click', () => setActiveView(button.dataset.view));
+  });
+}
+
+if (tabButtons.length) {
+  tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
+}
+
+setupStatsControls();
 loadFixtures(0);
 window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
-
