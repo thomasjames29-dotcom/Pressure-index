@@ -12,10 +12,147 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="goal-timing.css">
-  <link rel="stylesheet" href="model-analysis.css">
-  <link rel="stylesheet" href="match-card-summary.css">
   <script src="app.js" defer></script>
+  <style>
+    .page-tabs {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin: 0.5rem 0 1.25rem;
+    }
+    .view-tab {
+      border: 1px solid rgba(149,170,191,0.24);
+      background: rgba(13,28,45,0.8);
+      color: #dfeaf6;
+      border-radius: 999px;
+      padding: 0.7rem 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .view-tab.active {
+      background: rgba(122,184,255,0.12);
+      border-color: rgba(122,184,255,0.42);
+      color: #edf5ff;
+    }
+    .view-panel {
+      display: none;
+    }
+    .view-panel.active {
+      display: block;
+    }
+    .stats-card {
+      background: rgba(13,28,45,0.9);
+      border: 1px solid rgba(149,170,191,0.12);
+      border-radius: 18px;
+      padding: 1.25rem;
+    }
+    .stats-header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+    }
+    .stats-header h2 {
+      margin: 0;
+      font-size: clamp(1.3rem, 3vw, 2rem);
+    }
+    .stats-header p {
+      margin: 0.45rem 0 0;
+      color: #9db8ce;
+    }
+    .stats-days {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .stats-days label {
+      color: #8ea7c1;
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .stats-days select {
+      background: rgba(8,19,30,0.95);
+      color: #edf5ff;
+      border: 1px solid rgba(149,170,191,0.2);
+      border-radius: 10px;
+      padding: 0.7rem 0.8rem;
+      min-width: 210px;
+      font-size: 1rem;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .stats-input {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 1rem;
+      border-radius: 12px;
+      background: rgba(8,19,30,0.8);
+      border: 1px solid rgba(149,170,191,0.12);
+    }
+    .stats-input label {
+      color: #8ea7c1;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .stats-input input {
+      background: rgba(13,28,45,0.9);
+      border: 1px solid rgba(149,170,191,0.18);
+      color: #edf5ff;
+      border-radius: 10px;
+      padding: 0.8rem 0.9rem;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+    .stats-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .stats-actions button {
+      border: none;
+      border-radius: 10px;
+      padding: 0.8rem 1.1rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: opacity 0.2s ease;
+    }
+    .stats-actions button:hover { opacity: 0.94; }
+    #saveStatsButton {
+      background: linear-gradient(135deg, #55e7b2, #7ab8ff);
+      color: #07111e;
+    }
+    #clearStatsButton {
+      background: rgba(255,102,119,0.12);
+      color: #ffb1bb;
+      border: 1px solid rgba(255,102,119,0.2);
+    }
+    .stats-summary {
+      margin: 0;
+      color: #dfeaf7;
+      line-height: 1.6;
+    }
+    @media (max-width: 700px) {
+      .page-tabs,
+      .stats-header {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .stats-days select {
+        min-width: 100%;
+      }
+    }
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -25,12 +162,50 @@
   <main class="page">
     <section class="intro"><div><p class="eyebrow">8AM MATCH WINDOWS</p><h1>Find the <span>goal potential.</span></h1><p class="lede">Two separately analysed fixture windows, each spanning 8am to 8am in your local timezone.</p></div><div class="live-count"><span id="matchCount">0</span><small>FIXTURES</small></div></section>
     <section class="summary-panel" aria-label="Fixture summary"><div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div><div><strong>Higher goal potential</strong><span id="likelySummary">0 likely over 0.5</span></div></section>
-    <nav class="day-tabs" role="tablist" aria-label="Fixture day"><button class="day-tab active" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button><button class="day-tab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button></nav>
-    <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
-    <section class="table-card" aria-label="Upcoming fixture goal probability chart">
-      <div class="table-heading"><div><h2>Pre-match goal probability</h2><p>Fixtures ordered by local kickoff · league and team-based estimates</p></div><div class="chart-legend"><span class="legend-swatch legend-high"></span>High chance <span class="legend-swatch legend-medium"></span>Moderate <span class="legend-swatch legend-low"></span>Lower</div></div>
-      <div class="table-wrap"><table><thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>MODEL BASIS</th><th class="probability-heading">GOAL PROBABILITY</th></tr></thead><tbody id="matchesBody"></tbody></table></div>
-      <div class="chart-footnote">Estimates use league scoring averages, team attack/defence and recent form; xG is blended only when available from provider data. Fair odds are model calculations for expected-goal timings, not live pricing.</div>
+
+    <nav class="page-tabs" aria-label="App pages">
+      <button class="view-tab active" type="button" data-view="fixtures">Fixture analysis</button>
+      <button class="view-tab" type="button" data-view="stats">Stats</button>
+    </nav>
+
+    <section id="fixturesView" class="view-panel active" aria-label="Fixture analysis page">
+      <nav class="day-tabs" role="tablist" aria-label="Fixture day"><button class="day-tab active" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button><button class="day-tab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button></nav>
+      <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
+      <section class="table-card" aria-label="Upcoming fixture goal probability chart">
+        <div class="table-heading"><div><h2>Pre-match goal probability</h2><p>Fixtures ordered by local kickoff · league and team-based estimates</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>MODEL BASIS</th><th class="probability-heading">GOAL PROBABILITY</th></tr></thead><tbody id="matchesBody"></tbody></table></div>
+        <div class="chart-footnote">Estimates use league scoring averages, team attack/defence and recent form; xG is blended only when available from provider data. Fair odds are model calculations based on expected first goals and current market assumptions.</div>
+      </section>
+    </section>
+
+    <section id="statsView" class="view-panel" aria-label="First goal timing stats page" hidden>
+      <div class="stats-card">
+        <div class="stats-header">
+          <div>
+            <h2>First-goal timing stats</h2>
+            <p>Count how many completed games fell into each first-goal window.</p>
+          </div>
+          <div class="stats-days">
+            <label for="statsDaySelect">Day</label>
+            <select id="statsDaySelect" aria-label="Select stats day"></select>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stats-input"><label for="statsNoGoals">Goalless games</label><input id="statsNoGoals" type="number" min="0" step="1" value="0"></div>
+          <div class="stats-input"><label for="stats0To20">First goal 0–20</label><input id="stats0To20" type="number" min="0" step="1" value="0"></div>
+          <div class="stats-input"><label for="stats21ToHalftime">First goal 21–HT</label><input id="stats21ToHalftime" type="number" min="0" step="1" value="0"></div>
+          <div class="stats-input"><label for="stats45To75">First goal 45–75</label><input id="stats45To75" type="number" min="0" step="1" value="0"></div>
+          <div class="stats-input"><label for="stats76ToFinish">First goal 76–FT</label><input id="stats76ToFinish" type="number" min="0" step="1" value="0"></div>
+        </div>
+
+        <div class="stats-actions">
+          <button id="saveStatsButton" type="button">Save day</button>
+          <button id="clearStatsButton" type="button">Clear day</button>
+        </div>
+
+        <p id="statsSummary" class="stats-summary">No stats recorded yet.</p>
+      </div>
     </section>
   </main>
 </body>
