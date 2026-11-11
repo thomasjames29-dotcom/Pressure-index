@@ -1,8 +1,11 @@
-const CACHE_NAME = 'pressure-index-v1';
+const CACHE_NAME = 'pressure-index-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/styles.css',
+  '/goal-timing.css',
+  '/model-analysis.css',
+  '/match-card-summary.css',
   '/app.js',
   '/icon.svg',
   '/manifest.webmanifest'
@@ -36,6 +39,9 @@ self.addEventListener('fetch', (event) => {
         const isAppShell = event.request.url.startsWith(self.location.origin) && (
           event.request.url.includes('/index.html') ||
           event.request.url.includes('/styles.css') ||
+          event.request.url.includes('/goal-timing.css') ||
+          event.request.url.includes('/model-analysis.css') ||
+          event.request.url.includes('/match-card-summary.css') ||
           event.request.url.includes('/app.js') ||
           event.request.url.includes('/icon.svg') ||
           event.request.url.includes('/manifest.webmanifest') ||
@@ -45,7 +51,6 @@ self.addEventListener('fetch', (event) => {
         if (response.ok && isAppShell) {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         }
-
         return response;
       }).catch(() => cached || Response.error());
     })
