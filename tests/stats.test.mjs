@@ -274,4 +274,9 @@ test('partial refresh keeps complete saved data and rolling totals exclude incom
   await b.run(`loadStatsForDate('${recent}', true)`);
   assert.equal(JSON.parse(b.storage.get('pressure-index-first-goal-stats'))[recent].noGoals, 4);
   assert.match(b.elements.get('#statsDataStatus').textContent, /kept/);
+  const metadata = JSON.parse(b.storage.get('pressure-index-first-goal-stats-meta'));
+  metadata[recent].complete = false;
+  b.storage.set('pressure-index-first-goal-stats-meta', JSON.stringify(metadata));
+  await b.run(`loadStatsForDate('${recent}', true)`);
+  assert.equal(JSON.parse(b.storage.get('pressure-index-first-goal-stats'))[recent].noGoals, 4);
 });

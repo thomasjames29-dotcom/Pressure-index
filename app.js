@@ -196,7 +196,7 @@ async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = fals
         payload.complete !== (payload.unclassifiedGames === 0 && payload.diagnostics.fixturePagesMissing === 0)) throw new Error('Unrecognized or outdated stats response');
     const stats = cleanStats(payload.counts);
     const saved = readStorage(STATS_STORAGE_KEY);
-    if (!payload.complete && Object.hasOwn(saved, date) && (unverified || existingMeta?.complete)) {
+    if (!payload.complete && Object.hasOwn(saved, date)) {
       const d = payload.diagnostics;
       statsDataStatus.textContent = `INCOMPLETE refresh: ${payload.finishedGames} finished found · ${payload.classifiedGames} classified · ${payload.unclassifiedGames} unclassified (${d.scoreUnavailable || 0} unavailable scores, ${d.eventsMissing || 0} missing events, ${d.eventsInconsistent || 0} inconsistent events, ${d.eventFailures || 0} provider failures, ${d.eventRateLimited || 0} rate-limited, ${d.eventLimit || 0} limited); ${d.fixturePagesMissing || 0} fixture pages missing. Existing saved counts have been kept.`;
       return;
