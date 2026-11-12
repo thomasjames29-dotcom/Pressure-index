@@ -75,6 +75,16 @@ function cleanStats(value = {}) {
   return Object.fromEntries(STAT_KEYS.map((key) => [key, validCount(value?.[key])]));
 }
 function getStatsForDate(date) { return cleanStats(readStorage(STATS_STORAGE_KEY)[date]); }
+function saveStatsForDate(date, stats, meta) {
+  const saved = readStorage(STATS_STORAGE_KEY);
+  const metadata = readStorage(STATS_META_KEY);
+  metadata[date] = { version: 2, source: 'pending' };
+  if (!writeStorage(STATS_META_KEY, metadata)) return false;
+  saved[date] = stats;
+  if (!writeStorage(STATS_STORAGE_KEY, saved)) return false;
+  metadata[date] = meta;
+  return writeStorage(STATS_META_KEY, metadata);
+}
 function validCount(value) {
   const count = Number(value);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
@@ -85,40 +95,57 @@ function formatStatsSummary(stats) {
     `Goalless ${validCount(stats.noGoals)}`,
     `0–20 ${validCount(stats.min0To20)}`,
     `21–HT ${validCount(stats.min21ToHalftime)}`,
-    `45–75 ${validCount(stats.min45To75)}`,
+    `46–75 ${validCount(stats.min45To75)}`,
     `76–FT ${validCount(stats.min76ToFinish)}`
   ].join(' · ');
 }
 function updateSelectedDaySummary(date, stats = getStatsForDate(date)) {
-  statsDayTotal.textContent = `Selected day total: ${totalGames(stats)} games`;
-  statsSummary.textContent = totalGames(stats) ? `${formatStatsDate(date)} — ${formatStatsSummary(stats)}` : `No completed-match stats recorded for ${formatStatsDate(date)}.`;
+  const saved = readStorage(STATS_STORAGE_KEY);
   const meta = readStorage(STATS_META_KEY)[date];
-  if (meta) {
-    statsDataStatus.textContent = `${meta.finishedGames} finished games found · ${meta.classifiedGames} classified · ${meta.unclassifiedGames} missing goal-event data. Automatically refreshed ${new Date(meta.updatedAt).toLocaleString()}.`;
-  } else {
-    statsDataStatus.textContent = 'Choose a day and refresh results to load completed matches. Match totals are based on the provider’s available fixture and goal-event data.';
+  if (!Object.hasOwn(saved, date)) {
+    statsDayTotal.textContent = 'No results recorded';
+    statsSummary.textContent = 'Refresh this day to load results.';
+    statsDataStatus.textContent = 'No provider data saved for this day.';
+    return;
   }
+  const verified = meta?.version === 2 && meta.source === 'provider' && meta.timezone === timezone;
+  const complete = verified && meta.complete;
+  statsDayTotal.textContent = verified
+    ? `${meta.finishedGames} finished${meta.diagnostics?.fixturePagesMissing ? ' found (fixture list incomplete)' : ''} · ${meta.classifiedGames} classified · ${meta.unclassifiedGames} unclassified`
+    : `${totalGames(stats)} recorded in categories · finished total unknown`;
+  statsSummary.textContent = `${complete ? 'Classified breakdown' : 'INCOMPLETE / UNVERIFIED breakdown (not representative of all games)'}: ${formatStatsSummary(stats)}`;
+  if (!verified) {
+    statsDataStatus.textContent = 'Manual, older, or different-timezone data is unverified. Refresh this day to check provider coverage.';
+    return;
+  }
+  const d = meta.diagnostics || {};
+  statsDataStatus.textContent = `${complete ? 'Complete for finished games returned by the provider' : 'INCOMPLETE: breakdown may be strongly biased'}${date >= getLocalDateKey() ? ' · day still in progress' : ''}. Unclassified: ${d.scoreUnavailable || 0} unavailable scores, ${d.eventsMissing || 0} missing events, ${d.eventsInconsistent || 0} inconsistent events, ${d.eventFailures || 0} provider failures, ${d.eventRateLimited || 0} rate-limited, ${d.eventLimit || 0} not requested due to limits. Missing fixture pages: ${d.fixturePagesMissing || 0} (${d.fixturePageFailures || 0} page failures). Updated ${new Date(meta.updatedAt).toLocaleString()}.`;
 }
 function recentStats(days) {
   const stored = readStorage(STATS_STORAGE_KEY);
+  const metadata = readStorage(STATS_META_KEY);
   const today = getLocalDateKey();
   const firstDay = addDays(today, -(days - 1));
   const totals = getDefaultStats();
-  let recordedDays = 0;
+  let completeDays = 0;
+  let incompleteDays = 0;
   Object.entries(stored).forEach(([date, counts]) => {
     if (date < firstDay || date > today || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    recordedDays += 1;
+    const meta = metadata[date];
+    if (date === today || meta?.version !== 2 || meta.source !== 'provider' || meta.timezone !== timezone || !meta.complete) {
+      incompleteDays += 1;
+      return;
+    }
+    completeDays += 1;
     const clean = cleanStats(counts);
     STAT_KEYS.forEach((key) => { totals[key] += clean[key]; });
   });
-  return { totals, recordedDays };
+  return { totals, completeDays, incompleteDays, missingDays: days - completeDays - incompleteDays };
 }
 function renderRecentStats() {
   [[7, stats7DaySummary], [30, stats30DaySummary]].forEach(([days, element]) => {
-    const { totals, recordedDays } = recentStats(days);
-    element.textContent = recordedDays
-      ? `${formatStatsSummary(totals)} · totals from ${recordedDays} recorded ${recordedDays === 1 ? 'day' : 'days'}`
-      : 'Refresh individual days to build this total.';
+    const { totals, completeDays, incompleteDays, missingDays } = recentStats(days);
+    element.textContent = `${completeDays === days ? 'Complete' : 'INCOMPLETE'}: ${completeDays}/${days} complete days included · ${incompleteDays} incomplete/unverified, ${missingDays} missing. ${completeDays ? formatStatsSummary(totals) : 'No complete days to summarize.'}`;
   });
 }
 function populateStatsInputs(date) {
@@ -143,6 +170,13 @@ function renderStatsOptions(selectedDate = statsDaySelect.value) {
 }
 async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = false) {
   if (!date) return;
+  const existing = readStorage(STATS_STORAGE_KEY);
+  const existingMeta = readStorage(STATS_META_KEY)[date];
+  const unverified = Object.hasOwn(existing, date) && (existingMeta?.version !== 2 || existingMeta.source !== 'provider' || existingMeta.timezone !== timezone);
+  if (unverified) {
+    if (!forceRefresh) return;
+    if (!window.confirm('Replace these manual, older, or different-timezone counts if complete provider results are available?')) return;
+  }
   const requestId = ++statsRequestId;
   statsDataStatus.textContent = `Loading completed-match results for ${formatStatsDate(date)}…`;
   refreshStatsButton.disabled = true;
@@ -156,23 +190,31 @@ async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = fals
     if (!response.ok) throw new Error(payload.error || `Stats service returned ${response.status}`);
     if (requestId !== statsRequestId || statsDaySelect.value !== date) return;
 
+    if (payload.version !== 2 || payload.date !== date || payload.timezone !== timezone || typeof payload.complete !== 'boolean' || !payload.counts || !payload.diagnostics ||
+        ![payload.finishedGames, payload.classifiedGames, payload.unclassifiedGames, ...STAT_KEYS.map((key) => payload.counts[key])].every((value) => Number.isInteger(value) && value >= 0) ||
+        payload.finishedGames !== payload.classifiedGames + payload.unclassifiedGames || totalGames(payload.counts) !== payload.classifiedGames ||
+        payload.complete !== (payload.unclassifiedGames === 0 && payload.diagnostics.fixturePagesMissing === 0)) throw new Error('Unrecognized or outdated stats response');
     const stats = cleanStats(payload.counts);
     const saved = readStorage(STATS_STORAGE_KEY);
-    saved[date] = stats;
-    const metadata = readStorage(STATS_META_KEY);
-    metadata[date] = {
+    if (!payload.complete && Object.hasOwn(saved, date)) {
+      const d = payload.diagnostics;
+      statsDataStatus.textContent = `INCOMPLETE refresh: ${payload.finishedGames} finished found · ${payload.classifiedGames} classified · ${payload.unclassifiedGames} unclassified (${d.scoreUnavailable || 0} unavailable scores, ${d.eventsMissing || 0} missing events, ${d.eventsInconsistent || 0} inconsistent events, ${d.eventFailures || 0} provider failures, ${d.eventRateLimited || 0} rate-limited, ${d.eventLimit || 0} limited); ${d.fixturePagesMissing || 0} fixture pages missing. Existing saved counts have been kept.`;
+      return;
+    }
+    const meta = {
       finishedGames: validCount(payload.finishedGames),
       classifiedGames: validCount(payload.classifiedGames),
       unclassifiedGames: validCount(payload.unclassifiedGames),
-      updatedAt: payload.updatedAt || new Date().toISOString()
+      updatedAt: payload.updatedAt || new Date().toISOString(),
+      version: 2,
+      source: 'provider',
+      timezone,
+      complete: payload.complete,
+      diagnostics: payload.diagnostics
     };
-    writeStorage(STATS_STORAGE_KEY, saved);
-    writeStorage(STATS_META_KEY, metadata);
+    if (!saveStatsForDate(date, stats, meta)) return;
     populateStatsInputs(date);
     renderRecentStats();
-    if (payload.unclassifiedGames) {
-      statsDataStatus.textContent += ' Some results lack usable goal events, so the first-goal buckets may be incomplete.';
-    }
   } catch (error) {
     if (requestId === statsRequestId) {
       statsDataStatus.textContent = `Could not load results: ${error.message}. Existing saved counts have been kept.`;
@@ -184,15 +226,20 @@ async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = fals
 function saveSelectedDayStats() {
   const date = statsDaySelect.value || getLocalDateKey();
   const saved = readStorage(STATS_STORAGE_KEY);
-  saved[date] = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
-  if (writeStorage(STATS_STORAGE_KEY, saved)) {
+  if (Object.hasOwn(saved, date) && !window.confirm('Replace the saved results for this day with unverified manual counts?')) return;
+  statsRequestId += 1;
+  refreshStatsButton.disabled = false;
+  const stats = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
+  if (saveStatsForDate(date, stats, { version: 2, source: 'manual', timezone })) {
     populateStatsInputs(date);
     renderRecentStats();
-    statsDataStatus.textContent = 'Counts saved in this browser. Refresh results to replace them with provider match data.';
+    statsDataStatus.textContent = 'Manual counts saved in this browser; they are unverified and excluded from rolling summaries.';
   }
 }
 function clearSelectedDayStats() {
   const date = statsDaySelect.value || getLocalDateKey();
+  statsRequestId += 1;
+  refreshStatsButton.disabled = false;
   const saved = readStorage(STATS_STORAGE_KEY);
   const metadata = readStorage(STATS_META_KEY);
   delete saved[date];
