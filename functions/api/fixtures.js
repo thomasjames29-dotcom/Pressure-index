@@ -2,8 +2,10 @@ const API_BASE = 'https://v3.football.api-sports.io';
 const CACHE_SECONDS = 600;
 const STANDINGS_CACHE_SECONDS = 12 * 60 * 60;
 const MAX_STANDINGS_LEAGUES = 8;
+const VENUE_RATE_PRIOR_MATCHES = 5;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RETRIES = 2;
+export const FIXTURE_MODEL_VERSION = 'venue-poisson-v1';
 
 export async function onRequestGet({ request, env }) {
   if (!env.APIFOOTBALL_KEY) {
@@ -15,7 +17,7 @@ export async function onRequestGet({ request, env }) {
   const timezone = validTimezone(url.searchParams.get('timezone') || 'Europe/London');
   const now = new Date();
   const range = getLocalWindowForDay(now, timezone, day);
-  const cacheKey = new Request(`${url.origin}/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}&anchor=${range.startDate}`);
+  const cacheKey = new Request(`${url.origin}/api/fixtures?day=${day}&timezone=${encodeURIComponent(timezone)}&anchor=${range.startDate}&model=${FIXTURE_MODEL_VERSION}`);
 
   try {
     const cached = await caches.default.match(cacheKey);
@@ -55,16 +57,22 @@ export async function onRequestGet({ request, env }) {
       const matchFirstGoalMinute = expectedFirstGoalMinute(total);
       const expectedMinute = blendFirstGoalMinute(matchFirstGoalMinute, leagueFirstGoalBaselineMinute);
       const orderRecommendation = buildOrderRecommendation(total, expectedMinute || 45);
+      const zeroZeroProbability = probabilityZeroZero(model.homeGoals, model.awayGoals);
 
       return {
         fixtureId: String(item.fixture.id),
         kickoff: item.fixture.date,
         homeTeam: item.teams?.home?.name || 'Home',
         awayTeam: item.teams?.away?.name || 'Away',
+        leagueId,
+        season,
+        modelVersion: FIXTURE_MODEL_VERSION,
         league: item.league?.name || 'Competition',
         country: item.league?.country || '',
         over05Probability: Math.round(probabilityAtLeastOne(total) * 100),
+        over05ProbabilityExact: probabilityAtLeastOne(total),
         over15Probability: Math.round(probabilityAtLeastTwo(total) * 100),
+        over15ProbabilityExact: probabilityAtLeastTwo(total),
         expectedTotalGoals: round(total, 2),
         firstGoalExpectedMinute: expectedMinute,
         leagueFirstGoalBaselineMinute,
@@ -72,11 +80,11 @@ export async function onRequestGet({ request, env }) {
         inPlayOver05FairOdds: buildInPlayFairOddsLadder(total),
         inPlayOver05FairOddsAtExpectedMinute: fairOver05OddsAtMinute(total, expectedMinute),
         highGoalPotential: probabilityAtLeastTwo(total) >= 0.60,
+        zeroZeroProbability: round(zeroZeroProbability * 100, 1),
         probabilitySource: model.source,
         modelBasis: model.basis,
         modelConfidence: model.confidence,
         scorelines,
-        zeroZeroRisk: scorelines.some((scoreline) => scoreline.label === '0-0'),
         orderRecommendation
       };
     });
@@ -132,10 +140,16 @@ async function loadLeagueStandings(fixtures, key, origin) {
   return byLeague;
 }
 
-function buildLeagueTable(rows) {
+export function buildLeagueTable(rows) {
   const teams = new Map();
   let goalsFor = 0;
   let playedSum = 0;
+  let homeScored = 0;
+  let homeConceded = 0;
+  let homePlayed = 0;
+  let awayScored = 0;
+  let awayConceded = 0;
+  let awayPlayed = 0;
   let xgForTotal = 0;
   let xgTeamCount = 0;
 
@@ -148,12 +162,32 @@ function buildLeagueTable(rows) {
     const xgAgainst = firstNumber(row.xg?.against, row.expected_goals?.against, row.expectedGoals?.against, row.goals?.xg?.against);
     const team = {
       played, scored, conceded, form: formScore(row.form),
+      home: {
+        played: number(row.home?.played),
+        scored: number(row.home?.goals?.for),
+        conceded: number(row.home?.goals?.against)
+      },
+      away: {
+        played: number(row.away?.played),
+        scored: number(row.away?.goals?.for),
+        conceded: number(row.away?.goals?.against)
+      },
       xgForPerMatch: xgFor === null ? null : xgFor / played,
       xgAgainstPerMatch: xgAgainst === null ? null : xgAgainst / played
     };
     teams.set(String(row.team.id), team);
     goalsFor += scored;
     playedSum += played;
+    if (team.home.played > 0 && team.home.scored !== null && team.home.conceded !== null) {
+      homeScored += team.home.scored;
+      homeConceded += team.home.conceded;
+      homePlayed += team.home.played;
+    }
+    if (team.away.played > 0 && team.away.scored !== null && team.away.conceded !== null) {
+      awayScored += team.away.scored;
+      awayConceded += team.away.conceded;
+      awayPlayed += team.away.played;
+    }
     if (team.xgForPerMatch !== null && team.xgAgainstPerMatch !== null) {
       xgForTotal += xgFor;
       xgTeamCount += played;
@@ -167,34 +201,40 @@ function buildLeagueTable(rows) {
     teams,
     averageTotalGoals,
     averageTeamGoals,
-    averageHomeGoals: averageTeamGoals * 1.08,
-    averageAwayGoals: averageTeamGoals * 0.92,
+    averageHomeGoals: homePlayed ? homeScored / homePlayed : averageTeamGoals * 1.08,
+    averageHomeGoalsAgainst: homePlayed ? homeConceded / homePlayed : averageTeamGoals * 0.92,
+    averageAwayGoals: awayPlayed ? awayScored / awayPlayed : averageTeamGoals * 0.92,
+    averageAwayGoalsAgainst: awayPlayed ? awayConceded / awayPlayed : averageTeamGoals * 1.08,
     averageXgFor: xgTeamCount ? xgForTotal / xgTeamCount : null
   };
 }
 
-function estimateMatchGoals({ table, homeRow, awayRow }) {
+export function estimateMatchGoals({ table, homeRow, awayRow }) {
   const league = table || buildLeagueTable([]);
   if (!homeRow || !awayRow || !homeRow.played || !awayRow.played) {
     const total = clamp(league.averageTotalGoals || 2.65, 1.4, 4.2);
     return { homeGoals: total * 0.54, awayGoals: total * 0.46, source: 'league baseline', basis: 'League scoring average; team data unavailable', confidence: 'low' };
   }
 
-  const attackHome = clamp((homeRow.scored / homeRow.played) / league.averageTeamGoals, 0.55, 1.55);
-  const defenceAway = clamp((awayRow.conceded / awayRow.played) / league.averageTeamGoals, 0.55, 1.55);
-  const attackAway = clamp((awayRow.scored / awayRow.played) / league.averageTeamGoals, 0.55, 1.55);
-  const defenceHome = clamp((homeRow.conceded / homeRow.played) / league.averageTeamGoals, 0.55, 1.55);
+  const attackHome = relativeVenueRate(homeRow, 'home', 'scored', league.averageHomeGoals);
+  const defenceAway = relativeVenueRate(awayRow, 'away', 'conceded', league.averageHomeGoalsAgainst);
+  const attackAway = relativeVenueRate(awayRow, 'away', 'scored', league.averageAwayGoals);
+  const defenceHome = relativeVenueRate(homeRow, 'home', 'conceded', league.averageAwayGoalsAgainst);
   let homeGoals = league.averageHomeGoals * attackHome * defenceAway * formMultiplier(homeRow.form);
   let awayGoals = league.averageAwayGoals * attackAway * defenceHome * formMultiplier(awayRow.form);
 
   let usedXg = false;
   if (homeRow.xgForPerMatch !== null && awayRow.xgAgainstPerMatch !== null && league.averageXgFor > 0) {
-    const homeXg = league.averageHomeGoals * (homeRow.xgForPerMatch / league.averageXgFor) * (awayRow.xgAgainstPerMatch / league.averageXgFor);
+    const homeXg = league.averageHomeGoals
+      * (shrinkRate(homeRow.xgForPerMatch, homeRow.played, league.averageXgFor) / league.averageXgFor)
+      * (shrinkRate(awayRow.xgAgainstPerMatch, awayRow.played, league.averageXgFor) / league.averageXgFor);
     homeGoals = homeGoals * 0.7 + clamp(homeXg, 0.2, 4.5) * 0.3;
     usedXg = true;
   }
   if (awayRow.xgForPerMatch !== null && homeRow.xgAgainstPerMatch !== null && league.averageXgFor > 0) {
-    const awayXg = league.averageAwayGoals * (awayRow.xgForPerMatch / league.averageXgFor) * (homeRow.xgAgainstPerMatch / league.averageXgFor);
+    const awayXg = league.averageAwayGoals
+      * (shrinkRate(awayRow.xgForPerMatch, awayRow.played, league.averageXgFor) / league.averageXgFor)
+      * (shrinkRate(homeRow.xgAgainstPerMatch, homeRow.played, league.averageXgFor) / league.averageXgFor);
     awayGoals = awayGoals * 0.7 + clamp(awayXg, 0.2, 4.5) * 0.3;
     usedXg = true;
   }
@@ -204,8 +244,26 @@ function estimateMatchGoals({ table, homeRow, awayRow }) {
     homeGoals, awayGoals,
     source: usedXg ? 'league/team form + xG' : 'league/team form',
     basis: `${usedXg ? 'League average, team attack/defence, recent form and available xG' : 'League average, team attack/defence and recent form'} · ${homeRow.played}/${awayRow.played} matches played`,
-    confidence: Math.min(homeRow.played, awayRow.played) >= 10 ? 'medium' : 'low'
+    confidence: Math.min(homeRow.played, awayRow.played) >= 10
+      && Math.min(homeRow.home?.played ?? homeRow.played, awayRow.away?.played ?? awayRow.played) >= 6
+      ? 'medium'
+      : 'low'
   };
+}
+function relativeVenueRate(row, venue, metric, leagueRate) {
+  if (leagueRate <= 0) return 1;
+  return clamp(venueRate(row, venue, metric, leagueRate) / leagueRate, 0.55, 1.55);
+}
+function venueRate(row, venue, metric, leagueRate) {
+  const played = row[venue]?.played;
+  const goals = row[venue]?.[metric];
+  const rate = played > 0 && goals != null ? goals / played : row[metric] / row.played;
+  const sampleSize = played > 0 && goals != null ? played : row.played;
+  const priorRate = leagueRate > 0 ? leagueRate : rate;
+  return shrinkRate(rate, sampleSize, priorRate);
+}
+function shrinkRate(rate, sampleSize, priorRate) {
+  return ((rate * sampleSize) + (priorRate * VENUE_RATE_PRIOR_MATCHES)) / (sampleSize + VENUE_RATE_PRIOR_MATCHES);
 }
 
 function formScore(value) {
@@ -231,6 +289,7 @@ function poisson(goals, expected) {
 }
 function probabilityAtLeastOne(expected) { return 1 - Math.exp(-expected); }
 function probabilityAtLeastTwo(expected) { return 1 - Math.exp(-expected) * (1 + expected); }
+export function probabilityZeroZero(homeExpected, awayExpected) { return Math.exp(-(homeExpected + awayExpected)); }
 function expectedFirstGoalMinute(total) {
   if (total <= 0.0001) return null;
   return clamp(Math.round(90 / total - 90 / Math.expm1(total)), 1, 89);
@@ -254,7 +313,7 @@ function buildInPlayFairOddsLadder(expectedGoals) {
   });
 }
 
-function buildOrderRecommendation(expectedGoals, minute, config = {}) {
+export function buildOrderRecommendation(expectedGoals, minute, config = {}) {
   const lossRate = Number.isFinite(config.lossRate) ? config.lossRate : 0.20;
   const commissionRate = Number.isFinite(config.commissionRate) ? config.commissionRate : 0.05;
   const minEv = Number.isFinite(config.minEv) ? config.minEv : 0.02;
@@ -265,14 +324,17 @@ function buildOrderRecommendation(expectedGoals, minute, config = {}) {
     const remaining = expectedGoals * (90 - step) / 90;
     const probability = probabilityAtLeastOne(remaining);
     const fairOdds = probability > 0 ? round(1 / probability, 2) : null;
-    const targetOdds = fairOdds !== null ? round(Math.max(fairOdds, 1.35), 2) : null;
     const adjustedWinProbability = clamp(probability - lossRate, 0.01, 0.99);
-    const netOdds = targetOdds !== null ? round(targetOdds * (1 - commissionRate), 2) : null;
+    const rawTargetOdds = adjustedWinProbability > 0 && commissionRate < 1
+      ? 1 + ((1 - adjustedWinProbability + minEv) / (adjustedWinProbability * (1 - commissionRate)))
+      : null;
+    const targetOdds = rawTargetOdds !== null ? Math.ceil(rawTargetOdds * 100) / 100 : null;
+    const netOdds = targetOdds !== null ? 1 + (targetOdds - 1) * (1 - commissionRate) : null;
     const expectedValue = targetOdds !== null && netOdds !== null
-      ? round((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability) - lossRate, 3)
+      ? round((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability), 3)
       : null;
     const kellyFraction = targetOdds !== null && netOdds !== null && netOdds > 1
-      ? round(Math.max(0, ((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability) - lossRate) / (netOdds - 1)), 4)
+      ? round(Math.max(0, ((adjustedWinProbability * (netOdds - 1)) - (1 - adjustedWinProbability)) / (netOdds - 1)), 4)
       : null;
 
     return {
@@ -286,7 +348,7 @@ function buildOrderRecommendation(expectedGoals, minute, config = {}) {
       lossRate,
       commissionRate
     };
-  }).filter((candidate) => candidate.targetOdds !== null && Number.isFinite(candidate.expectedValue) && candidate.expectedValue > minEv && candidate.kellyFraction > minKelly);
+  }).filter((candidate) => candidate.targetOdds !== null && Number.isFinite(candidate.expectedValue) && candidate.expectedValue >= minEv && candidate.kellyFraction > minKelly);
 
   const best = candidates.sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue) || Number(b.kellyFraction) - Number(a.kellyFraction))[0];
 
@@ -318,11 +380,11 @@ function buildOrderRecommendation(expectedGoals, minute, config = {}) {
     riskAdjustedProbability: selected.riskAdjustedProbability,
     lossRate,
     commissionRate,
-    strategy: 'Back the best 0-0 over 0.5 order only when the matched price clears the profit-maximizing threshold.'
+    strategy: 'Minimum 0-0 over 0.5 price for the configured expected-value hurdle; compare with an available market price.'
   };
 }
 
-function number(value) { const result = Number(value); return Number.isFinite(result) ? result : null; }
+function number(value) { if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null; const result = Number(value); return Number.isFinite(result) ? result : null; }
 function firstNumber(...values) { for (const value of values) { const result = number(value); if (result !== null) return result; } return null; }
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function round(value, places) { const scale = 10 ** places; return Math.round(value * scale) / scale; }

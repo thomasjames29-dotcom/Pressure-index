@@ -1,3 +1,5 @@
+import { applyBrowserCalibration } from './lib/browser-calibration.mjs';
+
 const $ = (selector) => document.querySelector(selector);
 const body = $('#matchesBody');
 const notice = $('#notice');
@@ -11,6 +13,13 @@ const viewButtons = [...document.querySelectorAll('[data-view]')];
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
 const STATS_STORAGE_KEY = 'pressure-index-first-goal-stats';
 const STATS_META_KEY = 'pressure-index-first-goal-stats-meta';
+const CALIBRATION_STORAGE_KEY = 'pressure-index-calibration-v1';
+const calibrationForm = $('#calibrationForm');
+const calibrationLeague = $('#calibrationLeague');
+const calibrationSeason = $('#calibrationSeason');
+const calibrationStatus = $('#calibrationStatus');
+const calibrationButton = $('#calibrationButton');
+const clearCalibrationButton = $('#clearCalibrationButton');
 const statsDaySelect = $('#statsDaySelect');
 const statsSummary = $('#statsSummary');
 const statsDayTotal = $('#statsDayTotal');
@@ -31,6 +40,8 @@ const STAT_KEYS = Object.keys(STATS_FIELDS);
 let activeDay = 0;
 let loading = false;
 let statsRequestId = 0;
+let currentFixtures = [];
+let calibrationPending = false;
 
 function addDays(value, amount) {
   const [year, month, day] = value.split('-').map(Number);
@@ -222,6 +233,97 @@ function setActiveTab() {
     button.setAttribute('aria-selected', String(selected));
   });
 }
+function populateCalibrationLeagues(fixtures) {
+  const selected = calibrationLeague.value;
+  const leagues = new Map();
+  fixtures.forEach((fixture) => {
+    if (/^[1-9]\d{0,4}$/.test(fixture.leagueId || '') && !leagues.has(fixture.leagueId)) {
+      leagues.set(fixture.leagueId, { name: fixture.league || `League ${fixture.leagueId}`, season: Number(fixture.season) });
+    }
+  });
+  calibrationLeague.replaceChildren();
+  if (!leagues.size) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No leagues in this window';
+    calibrationLeague.append(option);
+  } else {
+    for (const [id, league] of leagues) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = `${league.name} (${id})`;
+      option.dataset.season = String(league.season);
+      calibrationLeague.append(option);
+    }
+    if (leagues.has(selected)) calibrationLeague.value = selected;
+  }
+  calibrationButton.disabled = !leagues.size || calibrationPending;
+  if (!calibrationSeason.value || (selected && calibrationLeague.value !== selected)) setCalibrationSeason();
+}
+function setCalibrationSeason() {
+  const currentSeason = Number(calibrationLeague.selectedOptions[0]?.dataset.season);
+  calibrationSeason.value = String(Number.isInteger(currentSeason) && currentSeason >= 2001
+    ? currentSeason - 1
+    : new Date().getFullYear() - 1);
+}
+function renderCurrentFixtures() {
+  const saved = readStorage(CALIBRATION_STORAGE_KEY);
+  const fixtures = currentFixtures.map((fixture) => applyBrowserCalibration(fixture, saved[fixture.leagueId]));
+  renderFixtures(fixtures);
+  matchCount.textContent = String(fixtures.length);
+  likelySummary.textContent = `${fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length} likely over 0.5`;
+}
+async function runCalibration(event) {
+  event.preventDefault();
+  if (calibrationPending) return;
+  const leagueId = calibrationLeague.value;
+  const season = Number(calibrationSeason.value);
+  if (!/^[1-9]\d{0,4}$/.test(leagueId) || !Number.isInteger(season) || season < 2000 || season > new Date().getUTCFullYear()) {
+    calibrationStatus.textContent = 'Choose a league and a valid season starting year.';
+    return;
+  }
+  calibrationPending = true;
+  calibrationButton.disabled = true;
+  clearCalibrationButton.disabled = true;
+  calibrationStatus.textContent = 'Replaying historical fixtures. This can take a moment…';
+  try {
+    const response = await fetch(`/api/calibration?league=${encodeURIComponent(leagueId)}&season=${season}`, { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Calibration service returned ${response.status}`);
+    if (!payload.eligible) {
+      calibrationStatus.textContent = `No update saved: ${payload.trainingCount} training and ${payload.holdoutCount} held-out matches. At least ${payload.minimumTraining}/${payload.minimumHoldout} are required, and both held-out scores must improve. Existing calibration is unchanged.`;
+      return;
+    }
+    if (payload.leagueId !== leagueId || payload.season !== season || typeof payload.modelVersion !== 'string'
+      || !Number.isFinite(payload.intercept) || Math.abs(payload.intercept) > 4
+      || !Number.isFinite(Date.parse(payload.lastResultAvailableAt))) throw new Error('Invalid calibration result.');
+    const saved = readStorage(CALIBRATION_STORAGE_KEY);
+    saved[leagueId] = {
+      season,
+      modelVersion: payload.modelVersion,
+      intercept: payload.intercept,
+      lastResultAvailableAt: payload.lastResultAvailableAt
+    };
+    localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(saved));
+    renderCurrentFixtures();
+    calibrationStatus.textContent = `Saved for ${payload.league} (${season}) in this browser. Held-out Brier: ${payload.raw.brierScore} → ${payload.calibrated.brierScore}; log loss: ${payload.raw.logLoss} → ${payload.calibrated.logLoss}. Applies to eligible current or next-season fixtures without xG.`;
+  } catch (error) {
+    calibrationStatus.textContent = `Calibration not saved: ${error.message}. Existing calibration is unchanged.`;
+  } finally {
+    calibrationPending = false;
+    calibrationButton.disabled = !calibrationLeague.value;
+    clearCalibrationButton.disabled = false;
+  }
+}
+function clearCalibration() {
+  try {
+    localStorage.removeItem(CALIBRATION_STORAGE_KEY);
+    renderCurrentFixtures();
+    calibrationStatus.textContent = 'Saved calibration cleared from this browser.';
+  } catch {
+    calibrationStatus.textContent = 'Could not clear calibration. Check browser storage settings.';
+  }
+}
 async function loadFixtures(day = activeDay) {
   if (loading) return;
   loading = true;
@@ -234,9 +336,9 @@ async function loadFixtures(day = activeDay) {
     if (!response.ok) throw new Error(payload.error || `Service returned ${response.status}`);
     const fixtures = Array.isArray(payload.fixtures) ? payload.fixtures : [];
     fixtures.sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
-    renderFixtures(fixtures);
-    matchCount.textContent = String(fixtures.length);
-    likelySummary.textContent = `${fixtures.filter((fixture) => Number(fixture.over05Probability) >= 70).length} likely over 0.5`;
+    currentFixtures = fixtures;
+    populateCalibrationLeagues(fixtures);
+    renderCurrentFixtures();
     windowSummary.textContent = computeWindowLabel(day);
     notice.textContent = fixtures.length
       ? `Showing ${fixtures.length} fixtures, kickoff ordered. First-goal timing and fair odds are model estimates, not live exchange prices.`
@@ -249,12 +351,12 @@ async function loadFixtures(day = activeDay) {
     body.innerHTML = `<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Fixture feed unavailable</strong><span>${escapeHtml(error.message)}</span></td></tr>`;
   } finally { loading = false; }
 }
-function getFixtureDecision({ fairOddsAtExpectedMinute, maxProfitOdds, evValue }) {
-  const fairOdds = Number.isFinite(Number(fairOddsAtExpectedMinute)) ? Number(fairOddsAtExpectedMinute) : 0;
-  const maxProfit = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds) : 0;
-  const ev = Number.isFinite(Number(evValue)) ? Number(evValue) : 0;
-  if (ev > 0.04 && maxProfit >= 1.4) return { className: 'action-green', label: 'Back', detail: 'Strong edge' };
-  if (ev > -0.04 || maxProfit >= 1.2 || fairOdds >= 1.8) return { className: 'action-amber', label: 'Caution', detail: 'Monitor price' };
+function getFixtureDecision({ fairOddsAtExpectedMinute, minimumOdds, evValue }) {
+  const fairOdds = typeof fairOddsAtExpectedMinute === 'number' ? fairOddsAtExpectedMinute : 0;
+  const oddsThreshold = typeof minimumOdds === 'number' ? minimumOdds : 0;
+  const ev = typeof evValue === 'number' ? evValue : 0;
+  if (ev > 0.04 && oddsThreshold >= 1.4) return { className: 'action-green', label: 'Price check', detail: 'Compare with market' };
+  if (ev > -0.04 || oddsThreshold >= 1.2 || fairOdds >= 1.8) return { className: 'action-amber', label: 'Caution', detail: 'Monitor price' };
   return { className: 'action-red', label: 'Avoid', detail: 'No edge' };
 }
 function renderFixtures(fixtures) {
@@ -264,18 +366,21 @@ function renderFixtures(fixtures) {
   }
   body.innerHTML = fixtures.map((fixture) => {
     const kickoff = new Date(fixture.kickoff);
-    const basis = fixture.modelBasis || fixture.probabilitySource || 'Model estimate';
+    const basis = `${fixture.modelBasis || fixture.probabilitySource || 'Model estimate'}${fixture.calibrationSeason ? ` · 0.5 calibrated (${fixture.calibrationSeason})` : ''}`;
     const confidence = fixture.modelConfidence ? ` · ${fixture.modelConfidence} confidence` : '';
-    const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute)) ? Math.round(Number(fixture.firstGoalExpectedMinute)) : null;
-    const fairOdds = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute)) ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute) : null;
-    const maxProfitOdds = Number.isFinite(Number(fixture.orderRecommendation?.targetOdds)) ? Number(fixture.orderRecommendation.targetOdds) : fairOdds;
-    const evValue = Number.isFinite(Number(fixture.orderRecommendation?.expectedValue)) ? Number(fixture.orderRecommendation.expectedValue) : null;
-    const decision = getFixtureDecision({ fairOddsAtExpectedMinute: fairOdds, maxProfitOdds, evValue });
+    const expectedMinute = typeof fixture.firstGoalExpectedMinute === 'number' && Number.isFinite(fixture.firstGoalExpectedMinute) ? Math.round(fixture.firstGoalExpectedMinute) : null;
+    const fairOdds = typeof fixture.inPlayOver05FairOddsAtExpectedMinute === 'number' && Number.isFinite(fixture.inPlayOver05FairOddsAtExpectedMinute) ? fixture.inPlayOver05FairOddsAtExpectedMinute : null;
+    const minimumOdds = typeof fixture.orderRecommendation?.targetOdds === 'number' && Number.isFinite(fixture.orderRecommendation.targetOdds) ? fixture.orderRecommendation.targetOdds : null;
+    const evValue = typeof fixture.orderRecommendation?.expectedValue === 'number' && Number.isFinite(fixture.orderRecommendation.expectedValue) ? fixture.orderRecommendation.expectedValue : null;
+    const decision = getFixtureDecision({ fairOddsAtExpectedMinute: fairOdds, minimumOdds, evValue });
     const firstGoalTime = expectedMinute === null ? '—' : `~${expectedMinute}'`;
+    const over05Text = typeof fixture.over05Probability === 'number' ? `${fixture.over05Probability}%` : '—';
+    const over15Text = typeof fixture.over15Probability === 'number' ? `${fixture.over15Probability}%` : '—';
+    const zeroZeroText = typeof fixture.zeroZeroProbability === 'number' ? `${fixture.zeroZeroProbability}%` : '—';
     const fairOddsText = fairOdds === null ? '—' : fairOdds.toFixed(2);
-    const maxProfitText = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds).toFixed(2) : '—';
+    const minimumOddsText = minimumOdds === null ? '—' : minimumOdds.toFixed(2);
     const evText = evValue === null ? '—' : `${evValue >= 0 ? '+' : ''}${evValue.toFixed(3)}`;
-    return `<tr class="fixture-row ${decision.className}"><td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td><td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td><td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td><td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td><td class="probability-cell"><div class="decision-card ${decision.className}"><div class="decision-header"><span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span><span class="decision-detail">${escapeHtml(decision.detail)}</span></div><div class="decision-metrics"><div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div><div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div><div class="stat-block"><span>Max profit odds</span><strong>${escapeHtml(maxProfitText)}</strong></div><div class="stat-block"><span>EV odds</span><strong>${escapeHtml(evText)}</strong></div></div></div></td></tr>`;
+    return `<tr class="fixture-row ${decision.className}"><td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td><td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td><td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td><td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td><td class="probability-cell"><div class="decision-card ${decision.className}"><div class="decision-header"><span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span><span class="decision-detail">${escapeHtml(decision.detail)}</span></div><div class="decision-metrics"><div class="stat-block"><span>Over 0.5 ${fixture.calibrationSeason ? '(calibrated)' : 'chance'}</span><strong>${escapeHtml(over05Text)}</strong></div><div class="stat-block"><span>Over 1.5 chance</span><strong>${escapeHtml(over15Text)}</strong></div><div class="stat-block"><span>0-0 ${fixture.calibrationSeason ? '(calibrated)' : 'chance'}</span><strong>${escapeHtml(zeroZeroText)}</strong></div><div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div><div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div><div class="stat-block"><span>Minimum odds</span><strong>${escapeHtml(minimumOddsText)}</strong></div><div class="stat-block"><span>Expected value</span><strong>${escapeHtml(evText)}</strong></div></div></div></td></tr>`;
   }).join('');
 }
 function escapeHtml(value) {
@@ -284,6 +389,9 @@ function escapeHtml(value) {
 
 viewButtons.forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
+calibrationForm.addEventListener('submit', runCalibration);
+calibrationLeague.addEventListener('change', setCalibrationSeason);
+clearCalibrationButton.addEventListener('click', clearCalibration);
 statsDaySelect.addEventListener('change', (event) => {
   populateStatsInputs(event.target.value);
   loadStatsForDate(event.target.value);

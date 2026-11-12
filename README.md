@@ -33,4 +33,22 @@ The function requests `GET /fixtures?live=all`, then fetches each fixture's stat
 
 The 0–100 score is an explicitly heuristic ranking based on available total shots, shots on target, corners, dangerous attacks, and a small possession contribution, scaled by elapsed match time. Missing values are excluded. It indicates observed attacking activity; it is not a calibrated probability that a goal will happen. API-Football may omit live statistics for some games.
 
+## Backtest fixture probabilities
+
+In **Fixture analysis**, choose a league shown in the selected fixture window and a season starting year, then press **Run calibration**. The app saves the fitted over-0.5 factor in this browser only when there are at least 100 training and 40 held-out fixtures and both held-out Brier score and log loss improve. Otherwise the existing factor is kept. **Clear saved calibration** removes all factors from this browser.
+
+The factor applies only to fixtures in the same or following season whose kickoff is after the replay's latest assumed result-availability time, provided the model version matches. Fixtures using xG are excluded because historical xG is not evaluated; the factor is also skipped if it would make over-0.5 less likely than the uncalibrated over-1.5. Calibrated over-0.5 and 0-0 probabilities are marked on the card; other estimates, including over-1.5 probabilities, first-goal timing, fair odds and order recommendations, remain uncalibrated. The data and thresholds are not a guarantee of future performance. Increment `FIXTURE_MODEL_VERSION` when changing the goal model to invalidate old browser factors and cached replays.
+
+The calibration endpoint uses the server's `APIFOOTBALL_KEY` without exposing it to the browser. Results are cached at the edge for 12 hours per league and season, but new requests consume API quota; protect or rate-limit the endpoint in Cloudflare when making the app public.
+
+Alternatively, run an opt-in historical replay from the command line to evaluate the over-0.5 and over-1.5 models by league and season:
+
+```sh
+node --env-file=.dev.vars scripts/calibrate-fixtures.mjs 39:2025 140:2025 > calibration-report.json
+```
+
+This uses Node.js 20.6 or newer and the local `.dev.vars` file described above. Alternatively, set `APIFOOTBALL_KEY` in the environment and omit `--env-file`; don't put the key in command history or commit it. Each league-season pair makes one API-Football fixtures request. The replay reconstructs standings and form from full-time scores; historical xG is not available in this feed, so it cannot evaluate the xG branch. It conservatively assumes results become available 24 hours after kickoff; the provider does not supply an actual result-availability timestamp, so unusually delayed results can still cause look-ahead. For each season, approximately the first 70% fit an over-0.5 log-odds intercept, and the rest report held-out Brier score, log loss, and probability bins. Training results unavailable by the holdout's first kickoff are excluded, and pooled results use a separate chronological split. League-season calibrators are omitted when there are fewer than 30 training fixtures.
+
+The five-match shrinkage prior and other model weights are heuristic, not fitted. Command-line reports do not update the browser or a shared production model. The replay does not evaluate in-play goal timing or betting returns.
+
 API documentation: https://www.api-football.com/documentation-v3
