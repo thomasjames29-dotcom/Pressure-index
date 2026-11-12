@@ -36,20 +36,20 @@
     </section>
     <section id="statsView" class="view-panel" aria-label="First-goal timing stats page" hidden>
       <div class="stats-card">
-        <div class="stats-header"><div><h2>First-goal timing stats</h2><p>Counts of completed games, grouped by the time of the first goal.</p></div><div class="stats-days"><label for="statsDaySelect">Stats day</label><select id="statsDaySelect" aria-label="Select stats day"></select></div></div>
+        <div class="stats-header"><div><h2>First-goal timing stats</h2><p>Finished games kicking off on the selected local calendar day (midnight–midnight), not the dashboard's 8am–8am window.</p></div><div class="stats-days"><label for="statsDaySelect">Stats day</label><select id="statsDaySelect" aria-label="Select stats day"></select></div></div>
         <p id="statsDataStatus" class="stats-data-status" role="status">Loading recent completed-match results…</p>
         <div class="stats-grid">
           <div class="stats-input"><label for="statsNoGoals">Goalless games</label><input id="statsNoGoals" type="number" min="0" step="1" value="0"></div>
           <div class="stats-input"><label for="stats0To20">First goal 0–20</label><input id="stats0To20" type="number" min="0" step="1" value="0"></div>
           <div class="stats-input"><label for="stats21ToHalftime">First goal 21–HT</label><input id="stats21ToHalftime" type="number" min="0" step="1" value="0"></div>
-          <div class="stats-input"><label for="stats45To75">First goal 45–75</label><input id="stats45To75" type="number" min="0" step="1" value="0"></div>
+          <div class="stats-input"><label for="stats45To75">First goal 46–75</label><input id="stats45To75" type="number" min="0" step="1" value="0"></div>
           <div class="stats-input"><label for="stats76ToFinish">First goal 76–FT</label><input id="stats76ToFinish" type="number" min="0" step="1" value="0"></div>
         </div>
-        <p id="statsDayTotal" class="stats-total" aria-live="polite">Selected day total: 0 games</p>
+        <p id="statsDayTotal" class="stats-total" aria-live="polite">No results recorded</p>
         <div class="stats-actions"><button id="refreshStatsButton" type="button">Refresh results</button><button id="saveStatsButton" type="button">Save edited counts</button><button id="clearStatsButton" type="button">Clear day</button></div>
         <p id="statsSummary" class="stats-summary" aria-live="polite">No stats recorded yet.</p>
         <div class="stats-periods" aria-label="Recent stats totals"><section class="stats-period"><h3>Last 7 days</h3><p id="stats7DaySummary">Refresh individual days to build this total.</p></section><section class="stats-period"><h3>Last 30 days</h3><p id="stats30DaySummary">Refresh individual days to build this total.</p></section></div>
-        <p class="stats-note">Results are fetched for the selected date from the football data provider and cached in this browser. Recent summaries include only dates already fetched or manually saved. Unavailable first-goal event data is reported separately, not silently counted as goalless.</p>
+        <p class="stats-note">Results are stored in this browser. Recent summaries include only complete, verified past days; missing and unverified days are excluded. Today's day is still in progress. Coverage depends on the provider. Unavailable data is never counted as goalless.</p>
       </div>
     </section>
   </main>
