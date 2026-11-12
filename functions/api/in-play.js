@@ -4,12 +4,13 @@ const API_BASE = 'https://v3.football.api-sports.io';
 const LIST_CACHE_SECONDS = 20;
 const MAX_BATCH = 8;
 const CONCURRENCY = 1;
+const PROVIDER_REQUEST_INTERVAL_MS = 250;
 const TIMEOUT_MS = 10000;
 
 export async function onRequestGet({ request, env }) {
   if (!env.APIFOOTBALL_KEY) return json({ error: 'In-play analysis is not configured.' }, 503);
   try {
-    const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY);
+    const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY, createProviderPacer());
     return json({
       fixtures: fixtures.map((item) => ({ id: String(item.fixture.id), priority: isPriorityLeague(item.league?.id) })),
       generatedAt: new Date().toISOString()
@@ -31,7 +32,8 @@ export async function onRequestPost({ request, env }) {
   }
 
   try {
-    const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY);
+    const paceProviderRequests = createProviderPacer();
+    const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY, paceProviderRequests);
     const byId = new Map(fixtures.map((item) => [String(item.fixture.id), item]));
     const results = new Array(ids.length);
     let next = 0;
@@ -46,7 +48,7 @@ export async function onRequestPost({ request, env }) {
           continue;
         }
         try {
-          const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY);
+          const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
           const observedAt = new Date().toISOString();
           let match = analyzeInPlay(fixture, stats, null, observedAt);
           if (!match) {
@@ -54,7 +56,7 @@ export async function onRequestPost({ request, env }) {
             continue;
           }
           try {
-            const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY);
+            const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
             match = analyzeInPlay(fixture, stats, events, observedAt);
           } catch (error) {
             if (error.rateLimited || error.providerAuth) fatal = error;
@@ -87,7 +89,7 @@ export async function onRequestPost({ request, env }) {
   }
 }
 
-async function getEligibleFixtures(origin, key) {
+async function getEligibleFixtures(origin, key, paceProviderRequests) {
   const cacheKey = new Request(new URL('/api/in-play-fixture-snapshot', origin));
   let fixtures;
   try {
@@ -95,7 +97,7 @@ async function getEligibleFixtures(origin, key) {
     if (cached) fixtures = await cached.json();
   } catch { /* Fetch when the optional cache is unavailable. */ }
   if (!Array.isArray(fixtures)) {
-    fixtures = await apiGet('/fixtures?live=all', key);
+    fixtures = await apiGet('/fixtures?live=all', key, paceProviderRequests);
     try {
       await caches.default.put(cacheKey, new Response(JSON.stringify(fixtures), {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${LIST_CACHE_SECONDS}` }
@@ -113,7 +115,8 @@ async function getEligibleFixtures(origin, key) {
   return [...unique.values()].sort((a, b) => Number(a.fixture.id) - Number(b.fixture.id));
 }
 
-async function apiGet(path, key) {
+async function apiGet(path, key, paceProviderRequests) {
+  await paceProviderRequests();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -156,6 +159,15 @@ async function apiGet(path, key) {
     if (!Array.isArray(payload?.response)) throw new Error('Provider returned an invalid response.');
     return payload.response;
   } finally { clearTimeout(timer); }
+}
+
+function createProviderPacer() {
+  let lastRequestAt = 0;
+  return async () => {
+    const delay = Math.max(0, lastRequestAt + PROVIDER_REQUEST_INTERVAL_MS - Date.now());
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    lastRequestAt = Date.now();
+  };
 }
 
 function errorResponse(error) {

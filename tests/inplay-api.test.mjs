@@ -72,19 +72,25 @@ test('provider quota failure is surfaced and preserves unprocessed matches', asy
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 
-test('a failed events request preserves the match and reports missing context', async () => {
+test('provider calls are spaced and a failed events request preserves the match', async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1)])); } } };
-  globalThis.fetch = async (url) => String(url).includes('/events')
-    ? new Response('{}', { status: 500 })
-    : new Response(JSON.stringify({
+  const requestTimes = [];
+  globalThis.fetch = async (url) => {
+    requestTimes.push(Date.now());
+    return String(url).includes('/events')
+      ? new Response('{}', { status: 500 })
+      : new Response(JSON.stringify({
       response: [{ statistics: [{ type: 'Total Shots', value: 3 }] }, { statistics: [{ type: 'Total Shots', value: 2 }] }]
-    }));
+      }));
+  };
   try {
     const response = await onRequestPost({ request: request('POST', { ids: ['1'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
     const result = (await response.json()).results[0];
     assert.equal(result.match.eventsAvailable, false);
+    assert.equal(requestTimes.length, 2);
+    assert.ok(requestTimes[1] - requestTimes[0] >= 200);
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 
