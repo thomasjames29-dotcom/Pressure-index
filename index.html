@@ -22,13 +22,13 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand-wrap"><div class="brand-mark">P</div><div><div class="brand-name">PRESSURE INDEX</div><div class="brand-subtitle">PRE-MATCH GOAL ANALYSIS</div></div></div>
+    <div class="brand-wrap"><div class="brand-mark">P</div><div><div class="brand-name">PRESSURE INDEX</div><div class="brand-subtitle">FOOTBALL GOAL ANALYSIS</div></div></div>
     <div class="top-status"><span class="live-dot"></span><span id="statusText">Loading fixtures…</span><span class="status-divider">·</span><span id="updatedAt">Waiting for data</span></div>
   </header>
   <main class="page">
-    <section class="intro"><div><p class="eyebrow">8AM MATCH WINDOWS</p><h1>Find the <span>goal potential.</span></h1><p class="lede">Two separately analysed fixture windows, each spanning 8am to 8am in your local timezone.</p></div><div class="live-count"><span id="matchCount">0</span><small>FIXTURES</small></div></section>
-    <section class="summary-panel" aria-label="Fixture summary"><div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div><div><strong>Higher goal potential</strong><span id="likelySummary">0 likely over 0.5</span></div></section>
-    <nav class="page-tabs" aria-label="App pages"><button class="view-tab active" type="button" data-view="fixtures" aria-controls="fixturesView" aria-selected="true">Fixture analysis</button><button class="view-tab" type="button" data-view="stats" aria-controls="statsView" aria-selected="false">Stats</button></nav>
+    <section id="fixtureIntro" class="intro"><div><p class="eyebrow">8AM MATCH WINDOWS</p><h1>Find the <span>goal potential.</span></h1><p class="lede">Two separately analysed fixture windows, each spanning 8am to 8am in your local timezone.</p></div><div class="live-count"><span id="matchCount">0</span><small>FIXTURES</small></div></section>
+    <section id="fixtureSummary" class="summary-panel" aria-label="Fixture summary"><div><strong>Selected window</strong><span id="windowSummary">Loading window…</span></div><div><strong>Higher goal potential</strong><span id="likelySummary">0 likely over 0.5</span></div></section>
+    <nav class="page-tabs" aria-label="App pages"><button class="view-tab active" type="button" data-view="fixtures" aria-controls="fixturesView" aria-selected="true">Fixture analysis</button><button class="view-tab" type="button" data-view="inplay" aria-controls="inplayView" aria-selected="false">In-play analysis</button><button class="view-tab" type="button" data-view="stats" aria-controls="statsView" aria-selected="false">Stats</button></nav>
     <section id="fixturesView" class="view-panel active" aria-label="Fixture analysis page">
       <nav class="day-tabs" role="tablist" aria-label="Fixture day"><button class="day-tab active" type="button" role="tab" aria-selected="true" data-day="0">Current day <small>8am–8am</small></button><button class="day-tab" type="button" role="tab" aria-selected="false" data-day="1">Next day <small>8am–8am</small></button></nav>
       <p id="notice" class="notice" role="status">Fetching upcoming fixtures…</p>
@@ -44,6 +44,14 @@
         <p id="calibrationStatus" role="status" aria-live="polite">Choose a league and an earlier season. This uses the football data provider's API quota.</p>
       </section>
       <section class="table-card" aria-label="Upcoming fixture goal probability chart"><div class="table-heading"><div><h2>Pre-match goal probability</h2><p>Fixtures ordered by local kickoff · league and team-based estimates</p></div></div><div class="table-wrap"><table><thead><tr><th>KICK-OFF</th><th>FIXTURE</th><th>COMPETITION</th><th>MODEL BASIS</th><th class="probability-heading">GOAL PROBABILITY</th></tr></thead><tbody id="matchesBody"></tbody></table></div><div class="chart-footnote">Estimates use league scoring averages, venue-aware team attack/defence and recent form; xG is blended only when available from provider data. Fair odds are model estimates, and minimum odds include configured commission and expected-value assumptions. No live market price is compared.</div></section>
+    </section>
+    <section id="inplayView" class="view-panel" aria-label="In-play analysis" hidden>
+      <div class="stats-card">
+        <div class="stats-header"><div><h2>Next 10 minutes</h2><p>Screen live matches for attacking pressure and recent momentum.</p></div><div class="stats-actions"><button id="sweepInplayButton" type="button">Refresh live sweep</button></div></div>
+        <p id="inplayStatus" class="stats-data-status" role="status" aria-live="polite">Press refresh to screen live matches. No automatic sweeps are made.</p>
+        <div id="inplayResults" class="inplay-results"></div>
+        <p class="stats-note">Rankings are heuristic, not calibrated goal probabilities or betting advice. They use match-to-date shot, corner, dangerous-attack and xG rates when available; momentum uses comparable prior sweeps. Rankings exclude games without sufficient shot data and may not cover all live matches. Scores near half-time may span the interval.</p>
+      </div>
     </section>
     <section id="statsView" class="view-panel" aria-label="First-goal timing stats page" hidden>
       <div class="stats-card">

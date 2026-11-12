@@ -1,5 +1,5 @@
-const CACHE_NAME = 'pressure-index-v4';
-const APP_SHELL = ['/', '/index.html', '/styles.css', '/goal-timing.css', '/model-analysis.css', '/match-card-summary.css', '/app.js', '/lib/browser-calibration.mjs', '/icon.svg', '/manifest.webmanifest'];
+const CACHE_NAME = 'pressure-index-v5';
+const APP_SHELL = ['/', '/index.html', '/styles.css', '/goal-timing.css', '/model-analysis.css', '/match-card-summary.css', '/app.js', '/lib/browser-calibration.mjs', '/lib/inplay-model.mjs', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
 });
@@ -16,7 +16,7 @@ self.addEventListener('fetch', (event) => {
         event.request.url.includes('/index.html') || event.request.url.includes('/styles.css') ||
         event.request.url.includes('/goal-timing.css') || event.request.url.includes('/model-analysis.css') ||
         event.request.url.includes('/match-card-summary.css') || event.request.url.includes('/app.js') ||
-        event.request.url.includes('/lib/browser-calibration.mjs') ||
+        event.request.url.includes('/lib/browser-calibration.mjs') || event.request.url.includes('/lib/inplay-model.mjs') ||
         event.request.url.includes('/icon.svg') || event.request.url.includes('/manifest.webmanifest') ||
         new URL(event.request.url).pathname === '/'
       );

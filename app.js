@@ -1,4 +1,5 @@
 import { applyBrowserCalibration } from './lib/browser-calibration.mjs';
+import { rankInPlay, selectInPlayFixtures } from './lib/inplay-model.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const body = $('#matchesBody');
@@ -20,6 +21,9 @@ const calibrationSeason = $('#calibrationSeason');
 const calibrationStatus = $('#calibrationStatus');
 const calibrationButton = $('#calibrationButton');
 const clearCalibrationButton = $('#clearCalibrationButton');
+const sweepInplayButton = $('#sweepInplayButton');
+const inplayStatus = $('#inplayStatus');
+const inplayResults = $('#inplayResults');
 const statsDaySelect = $('#statsDaySelect');
 const statsSummary = $('#statsSummary');
 const statsDayTotal = $('#statsDayTotal');
@@ -42,6 +46,8 @@ let loading = false;
 let statsRequestId = 0;
 let currentFixtures = [];
 let calibrationPending = false;
+let inplayCursors = {};
+const previousInplay = new Map();
 
 function addDays(value, amount) {
   const [year, month, day] = value.split('-').map(Number);
@@ -215,6 +221,8 @@ function clearSelectedDayStats() {
   statsDataStatus.textContent = 'Saved counts cleared. Refresh results to fetch the completed matches again.';
 }
 function setActiveView(viewName) {
+  $('#fixtureIntro').hidden = viewName !== 'fixtures';
+  $('#fixtureSummary').hidden = viewName !== 'fixtures';
   document.querySelectorAll('.view-panel').forEach((panel) => {
     const selected = panel.id === `${viewName}View`;
     panel.classList.toggle('active', selected);
@@ -383,11 +391,76 @@ function renderFixtures(fixtures) {
     return `<tr class="fixture-row ${decision.className}"><td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td><td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td><td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td><td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td><td class="probability-cell"><div class="decision-card ${decision.className}"><div class="decision-header"><span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span><span class="decision-detail">${escapeHtml(decision.detail)}</span></div><div class="decision-metrics"><div class="stat-block"><span>Over 0.5 ${fixture.calibrationSeason ? '(calibrated)' : 'chance'}</span><strong>${escapeHtml(over05Text)}</strong></div><div class="stat-block"><span>Over 1.5 chance</span><strong>${escapeHtml(over15Text)}</strong></div><div class="stat-block"><span>0-0 ${fixture.calibrationSeason ? '(calibrated)' : 'chance'}</span><strong>${escapeHtml(zeroZeroText)}</strong></div><div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div><div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div><div class="stat-block"><span>Minimum odds</span><strong>${escapeHtml(minimumOddsText)}</strong></div><div class="stat-block"><span>Expected value</span><strong>${escapeHtml(evText)}</strong></div></div></div></td></tr>`;
   }).join('');
 }
+function renderInPlay(matches) {
+  if (!matches.length) {
+    inplayResults.innerHTML = '<p>No matches with sufficient live statistics were ranked.</p>';
+    return;
+  }
+  inplayResults.innerHTML = [...matches].sort((a, b) => b.rankScore - a.rankScore || b.pressure - a.pressure)
+    .map((match, index) => {
+      const metric = (value) => value === null ? '—' : value;
+      const flags = [match.recentGoal ? 'Recent goal' : '', match.recentRed ? 'Recent red card' : '', !match.eventsAvailable ? 'Recent events unavailable' : ''].filter(Boolean).join(' · ');
+      return `<article class="inplay-card"><p>${index + 1}. ${escapeHtml(match.league)}${match.country ? ` · ${escapeHtml(match.country)}` : ''}</p><h3>${escapeHtml(match.homeTeam)} vs ${escapeHtml(match.awayTeam)}</h3><p>${escapeHtml(match.score)} · ${escapeHtml(match.elapsed)}' · sampled ${escapeHtml(new Date(match.observedAt).toLocaleTimeString())}</p><div class="inplay-score">Signal ${escapeHtml(match.rankScore)}/100</div><p>Pressure ${escapeHtml(match.pressure)}/100 · ${match.momentum === null ? 'Momentum unavailable' : `Momentum ${escapeHtml(match.momentum)}/100`}</p><p>Shots ${escapeHtml(metric(match.totals.shots))} · On target ${escapeHtml(metric(match.totals.onTarget))} · Corners ${escapeHtml(metric(match.totals.corners))} · Dangerous attacks ${escapeHtml(metric(match.totals.dangerous))} · xG ${escapeHtml(metric(match.totals.xg))}</p>${flags ? `<p class="inplay-flags">${escapeHtml(flags)}</p>` : ''}</article>`;
+    }).join('');
+}
+async function sweepInPlay() {
+  const batchSize = 8;
+  sweepInplayButton.disabled = true;
+  inplayResults.innerHTML = '';
+  inplayStatus.textContent = 'Loading live matches…';
+  const matches = [];
+  let selected = [];
+  let total = 0;
+  let processed = 0;
+  let unavailable = 0;
+  try {
+    const response = await fetch('/api/in-play', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Live service returned ${response.status}`);
+    if (!Array.isArray(payload.fixtures)) throw new Error('Invalid live fixture list.');
+    total = payload.fixtures.length;
+    if (!total) {
+      inplayStatus.textContent = 'No eligible matches are currently in play (minutes 10–80, first or second half).';
+      return;
+    }
+    const selection = selectInPlayFixtures(payload.fixtures, inplayCursors);
+    selected = selection.ids;
+    for (let i = 0; i < selected.length; i += batchSize) {
+      const batch = selected.slice(i, i + batchSize);
+      inplayStatus.textContent = `Screening ${processed} of ${selected.length} selected matches (${total} eligible)…`;
+      const batchResponse = await fetch('/api/in-play', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: batch }),
+        cache: 'no-store'
+      });
+      const batchPayload = await batchResponse.json().catch(() => ({}));
+      if (!batchResponse.ok) throw new Error(batchPayload.error || `Live service returned ${batchResponse.status}`);
+      if (!Array.isArray(batchPayload.results) || batchPayload.results.length !== batch.length) throw new Error('Invalid live batch response.');
+      for (const result of batchPayload.results) {
+        if (!result.match) { unavailable += 1; continue; }
+        const match = result.match;
+        matches.push(rankInPlay(match, previousInplay.get(match.id)));
+        previousInplay.set(match.id, match);
+      }
+      processed += batch.length;
+      renderInPlay(matches);
+    }
+    inplayCursors = selection.cursors;
+    inplayStatus.textContent = `Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${total - processed} not screened. ${total > processed ? 'Major leagues are prioritized; later sweeps rotate through overflow. ' : ''}Results are snapshots, not live updates.`;
+  } catch (error) {
+    renderInPlay(matches);
+    inplayStatus.textContent = `Sweep stopped: ${error.message} Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${Math.max(0, total - processed)} not screened.`;
+  } finally {
+    sweepInplayButton.disabled = false;
+  }
+}
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
 viewButtons.forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
+sweepInplayButton.addEventListener('click', sweepInPlay);
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
 calibrationForm.addEventListener('submit', runCalibration);
 calibrationLeague.addEventListener('change', setCalibrationSeason);
