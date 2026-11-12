@@ -37,7 +37,9 @@ export async function onRequestGet({ request, env }) {
         unclassified += 1;
         return;
       }
-      if (homeGoals + awayGoals === 0) {
+
+      const expectedGoalEvents = homeGoals + awayGoals;
+      if (expectedGoalEvents === 0) {
         counts.noGoals += 1;
         return;
       }
@@ -47,12 +49,16 @@ export async function onRequestGet({ request, env }) {
         unclassified += 1;
         return;
       }
+
       try {
         const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(fixtureId)}`, env.APIFOOTBALL_KEY);
         const goals = events
           .filter(isMatchGoal)
           .sort((a, b) => goalElapsedMinute(a) - goalElapsedMinute(b));
-        if (!goals.length) {
+
+        // The score is authoritative, but only classify when the event feed accounts
+        // for every goal. Missing/extra events must not silently skew first-goal bins.
+        if (goals.length !== expectedGoalEvents) {
           unclassified += 1;
           return;
         }
@@ -90,13 +96,12 @@ function readGoalCount(value) {
   return Number.isInteger(count) && count >= 0 ? count : null;
 }
 function isMatchGoal(event) {
-  if (event?.type !== 'Goal' || !Number.isFinite(Number(event?.time?.elapsed))) return false;
+  if (event?.type !== 'Goal' || !Number.isInteger(Number(event?.time?.elapsed)) || Number(event.time.elapsed) < 1) return false;
   const detail = `${event.detail || ''} ${event.comments || ''}`;
-  return !/missed penalty|goal cancelled|goal disallowed|annulled/i.test(detail);
+  return !/missed penalty|goal cancelled|goal disallowed|annulled|penalty shootout/i.test(detail);
 }
 function goalElapsedMinute(event) {
-  // Use elapsed time rather than adding stoppage time: 45+ is first-half stoppage,
-  // while elapsed 46 starts the second half for these requested ranges.
+  // Elapsed 45 (including 45+ stoppage) is first-half time; elapsed 46 starts half two.
   return Number(event?.time?.elapsed);
 }
 function classifyFirstGoal(minute, counts) {
