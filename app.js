@@ -10,11 +10,14 @@ const tabButtons = [...document.querySelectorAll('[data-day]')];
 const viewButtons = [...document.querySelectorAll('[data-view]')];
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
 const STATS_STORAGE_KEY = 'pressure-index-first-goal-stats';
+const STATS_META_KEY = 'pressure-index-first-goal-stats-meta';
 const statsDaySelect = $('#statsDaySelect');
 const statsSummary = $('#statsSummary');
 const statsDayTotal = $('#statsDayTotal');
+const statsDataStatus = $('#statsDataStatus');
 const stats7DaySummary = $('#stats7DaySummary');
 const stats30DaySummary = $('#stats30DaySummary');
+const refreshStatsButton = $('#refreshStatsButton');
 const saveStatsButton = $('#saveStatsButton');
 const clearStatsButton = $('#clearStatsButton');
 const STATS_FIELDS = {
@@ -24,8 +27,10 @@ const STATS_FIELDS = {
   min45To75: $('#stats45To75'),
   min76ToFinish: $('#stats76ToFinish')
 };
+const STAT_KEYS = Object.keys(STATS_FIELDS);
 let activeDay = 0;
 let loading = false;
+let statsRequestId = 0;
 
 function addDays(value, amount) {
   const [year, month, day] = value.split('-').map(Number);
@@ -41,8 +46,7 @@ function computeWindowLabel(day) {
 }
 function formatWindowDate(value) {
   const [year, month, day] = value.split('-').map(Number);
-  return new Intl.DateTimeFormat([], { timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' })
-    .format(new Date(Date.UTC(year, month - 1, day, 8)));
+  return new Intl.DateTimeFormat([], { timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' }).format(new Date(Date.UTC(year, month - 1, day, 8)));
 }
 function getLocalDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -51,134 +55,153 @@ function formatStatsDate(dateString) {
   const date = new Date(`${dateString}T12:00:00`);
   return Number.isNaN(date.getTime()) ? dateString : date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 }
-function readStoredStats() {
+function readStorage(key) {
   try {
-    const value = JSON.parse(localStorage.getItem(STATS_STORAGE_KEY) || '{}');
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
-function writeStoredStats(stats) {
+function writeStorage(key, value) {
   try {
-    localStorage.setItem(STATS_STORAGE_KEY, JSON.stringify(stats));
+    localStorage.setItem(key, JSON.stringify(value));
     return true;
   } catch {
-    if (statsSummary) statsSummary.textContent = 'Could not save stats. Check that browser storage is enabled.';
+    if (statsDataStatus) statsDataStatus.textContent = 'Could not save to this browser. Check browser storage settings.';
     return false;
   }
 }
 function getDefaultStats() { return { noGoals: 0, min0To20: 0, min21ToHalftime: 0, min45To75: 0, min76ToFinish: 0 }; }
-function getStatsForDate(date) { return { ...getDefaultStats(), ...(readStoredStats()[date] || {}) }; }
+function cleanStats(value = {}) {
+  return Object.fromEntries(STAT_KEYS.map((key) => [key, validCount(value?.[key])]));
+}
+function getStatsForDate(date) { return cleanStats(readStorage(STATS_STORAGE_KEY)[date]); }
 function validCount(value) {
   const count = Number(value);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
-function totalGames(stats) { return Object.values(stats).reduce((sum, value) => sum + validCount(value), 0); }
+function totalGames(stats) { return STAT_KEYS.reduce((sum, key) => sum + validCount(stats[key]), 0); }
 function formatStatsSummary(stats) {
-  const values = [
+  return [
     `Goalless ${validCount(stats.noGoals)}`,
     `0–20 ${validCount(stats.min0To20)}`,
     `21–HT ${validCount(stats.min21ToHalftime)}`,
     `45–75 ${validCount(stats.min45To75)}`,
     `76–FT ${validCount(stats.min76ToFinish)}`
-  ];
-  return values.join(' · ');
+  ].join(' · ');
 }
 function updateSelectedDaySummary(date, stats = getStatsForDate(date)) {
   statsDayTotal.textContent = `Selected day total: ${totalGames(stats)} games`;
-  statsSummary.textContent = totalGames(stats) ? `${formatStatsDate(date)} — ${formatStatsSummary(stats)}` : `No stats recorded for ${formatStatsDate(date)} yet.`;
+  statsSummary.textContent = totalGames(stats) ? `${formatStatsDate(date)} — ${formatStatsSummary(stats)}` : `No completed-match stats recorded for ${formatStatsDate(date)}.`;
+  const meta = readStorage(STATS_META_KEY)[date];
+  if (meta) {
+    statsDataStatus.textContent = `${meta.finishedGames} finished games found · ${meta.classifiedGames} classified · ${meta.unclassifiedGames} missing goal-event data. Automatically refreshed ${new Date(meta.updatedAt).toLocaleString()}.`;
+  } else {
+    statsDataStatus.textContent = 'Choose a day and refresh results to load completed matches. Match totals are based on the provider’s available fixture and goal-event data.';
+  }
 }
 function recentStats(days) {
-  const stored = readStoredStats();
+  const stored = readStorage(STATS_STORAGE_KEY);
   const today = getLocalDateKey();
   const firstDay = addDays(today, -(days - 1));
   const totals = getDefaultStats();
   let recordedDays = 0;
-
   Object.entries(stored).forEach(([date, counts]) => {
     if (date < firstDay || date > today || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
     recordedDays += 1;
-    Object.keys(totals).forEach((key) => {
-      totals[key] += validCount(counts?.[key]);
-    });
+    const clean = cleanStats(counts);
+    STAT_KEYS.forEach((key) => { totals[key] += clean[key]; });
   });
-
   return { totals, recordedDays };
 }
 function renderRecentStats() {
-  const ranges = [[7, stats7DaySummary], [30, stats30DaySummary]];
-  ranges.forEach(([days, element]) => {
+  [[7, stats7DaySummary], [30, stats30DaySummary]].forEach(([days, element]) => {
     const { totals, recordedDays } = recentStats(days);
     element.textContent = recordedDays
-      ? `${formatStatsSummary(totals)} · ${recordedDays} ${recordedDays === 1 ? 'day' : 'days'} recorded`
-      : 'No data recorded in this range.';
+      ? `${formatStatsSummary(totals)} · totals from ${recordedDays} recorded ${recordedDays === 1 ? 'day' : 'days'}`
+      : 'Refresh individual days to build this total.';
   });
 }
 function populateStatsInputs(date) {
   if (!date) return;
   const stats = getStatsForDate(date);
-  Object.entries(STATS_FIELDS).forEach(([key, input]) => {
-    input.value = validCount(stats[key]);
-  });
+  Object.entries(STATS_FIELDS).forEach(([key, input]) => { input.value = stats[key]; });
   updateSelectedDaySummary(date, stats);
 }
-function renderStatsOptions() {
+function renderStatsOptions(selectedDate = statsDaySelect.value) {
   if (!statsDaySelect) return;
-  const stored = readStoredStats();
   const today = getLocalDateKey();
-  const dates = [...new Set([today, ...Object.keys(stored)])]
-    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
-    .sort((a, b) => b.localeCompare(a));
-  const previous = statsDaySelect.value;
+  const dates = Array.from({ length: 31 }, (_, index) => addDays(today, -index));
+  Object.keys(readStorage(STATS_STORAGE_KEY)).forEach((date) => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && !dates.includes(date)) dates.push(date);
+  });
+  dates.sort((a, b) => b.localeCompare(a));
   statsDaySelect.innerHTML = dates.map((date) => `<option value="${date}">${date === today ? 'Today — ' : ''}${formatStatsDate(date)}</option>`).join('');
-  statsDaySelect.value = dates.includes(previous) ? previous : today;
+  const preferred = selectedDate || addDays(today, -1);
+  statsDaySelect.value = dates.includes(preferred) ? preferred : addDays(today, -1);
   populateStatsInputs(statsDaySelect.value);
   renderRecentStats();
 }
+async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = false) {
+  if (!date) return;
+  const requestId = ++statsRequestId;
+  statsDataStatus.textContent = `Loading completed-match results for ${formatStatsDate(date)}…`;
+  refreshStatsButton.disabled = true;
+  try {
+    const refresh = forceRefresh ? '&refresh=1' : '';
+    const response = await fetch(`/api/stats?date=${encodeURIComponent(date)}&timezone=${encodeURIComponent(timezone)}${refresh}`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store'
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Stats service returned ${response.status}`);
+    if (requestId !== statsRequestId || statsDaySelect.value !== date) return;
+
+    const stats = cleanStats(payload.counts);
+    const saved = readStorage(STATS_STORAGE_KEY);
+    saved[date] = stats;
+    const metadata = readStorage(STATS_META_KEY);
+    metadata[date] = {
+      finishedGames: validCount(payload.finishedGames),
+      classifiedGames: validCount(payload.classifiedGames),
+      unclassifiedGames: validCount(payload.unclassifiedGames),
+      updatedAt: payload.updatedAt || new Date().toISOString()
+    };
+    writeStorage(STATS_STORAGE_KEY, saved);
+    writeStorage(STATS_META_KEY, metadata);
+    populateStatsInputs(date);
+    renderRecentStats();
+    if (payload.unclassifiedGames) {
+      statsDataStatus.textContent += ' Some results lack usable goal events, so the first-goal buckets may be incomplete.';
+    }
+  } catch (error) {
+    if (requestId === statsRequestId) {
+      statsDataStatus.textContent = `Could not load results: ${error.message}. Existing saved counts have been kept.`;
+    }
+  } finally {
+    if (requestId === statsRequestId) refreshStatsButton.disabled = false;
+  }
+}
 function saveSelectedDayStats() {
   const date = statsDaySelect.value || getLocalDateKey();
-  const stats = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
-  const stored = readStoredStats();
-  stored[date] = stats;
-  if (writeStoredStats(stored)) renderStatsOptions();
+  const saved = readStorage(STATS_STORAGE_KEY);
+  saved[date] = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
+  if (writeStorage(STATS_STORAGE_KEY, saved)) {
+    populateStatsInputs(date);
+    renderRecentStats();
+    statsDataStatus.textContent = 'Counts saved in this browser. Refresh results to replace them with provider match data.';
+  }
 }
 function clearSelectedDayStats() {
   const date = statsDaySelect.value || getLocalDateKey();
-  const stored = readStoredStats();
-  delete stored[date];
-  if (writeStoredStats(stored)) renderStatsOptions();
-}
-async function fetchStatsForDate(date) {
-  try {
-    const response = await fetch(`/api/stats?date=${date}&timezone=${encodeURIComponent(timezone)}`);
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return null;
-    const counts = payload?.counts || {};
-    return { ...getDefaultStats(), ...counts };
-  } catch {
-    return null;
-  }
-}
-async function hydrateRecentStats() {
-  const today = getLocalDateKey();
-  const dates = Array.from({ length: 31 }, (_, index) => addDays(today, -(30 - index)));
-  const stored = readStoredStats();
-  const pending = dates.filter((date) => !stored[date] || totalGames(stored[date]) === 0);
-
-  if (!pending.length) {
-    renderStatsOptions();
-    return;
-  }
-
-  for (const date of pending) {
-    const data = await fetchStatsForDate(date);
-    if (data) {
-      stored[date] = data;
-      writeStoredStats(stored);
-    }
-  }
-  renderStatsOptions();
+  const saved = readStorage(STATS_STORAGE_KEY);
+  const metadata = readStorage(STATS_META_KEY);
+  delete saved[date];
+  delete metadata[date];
+  writeStorage(STATS_STORAGE_KEY, saved);
+  writeStorage(STATS_META_KEY, metadata);
+  populateStatsInputs(date);
+  renderRecentStats();
+  statsDataStatus.textContent = 'Saved counts cleared. Refresh results to fetch the completed matches again.';
 }
 function setActiveView(viewName) {
   document.querySelectorAll('.view-panel').forEach((panel) => {
@@ -191,7 +214,6 @@ function setActiveView(viewName) {
     button.classList.toggle('active', selected);
     button.setAttribute('aria-selected', String(selected));
   });
-  if (viewName === 'stats') renderStatsOptions();
 }
 function setActiveTab() {
   tabButtons.forEach((button) => {
@@ -225,21 +247,14 @@ async function loadFixtures(day = activeDay) {
     statusText.textContent = 'Connection issue';
     notice.textContent = `Unable to load fixture analysis: ${error.message}`;
     body.innerHTML = `<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>Fixture feed unavailable</strong><span>${escapeHtml(error.message)}</span></td></tr>`;
-  } finally {
-    loading = false;
-  }
+  } finally { loading = false; }
 }
 function getFixtureDecision({ fairOddsAtExpectedMinute, maxProfitOdds, evValue }) {
   const fairOdds = Number.isFinite(Number(fairOddsAtExpectedMinute)) ? Number(fairOddsAtExpectedMinute) : 0;
   const maxProfit = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds) : 0;
   const ev = Number.isFinite(Number(evValue)) ? Number(evValue) : 0;
-
-  if (ev > 0.04 && maxProfit >= 1.4) {
-    return { className: 'action-green', label: 'Back', detail: 'Strong edge' };
-  }
-  if (ev > -0.04 || maxProfit >= 1.2 || fairOdds >= 1.8) {
-    return { className: 'action-amber', label: 'Caution', detail: 'Monitor price' };
-  }
+  if (ev > 0.04 && maxProfit >= 1.4) return { className: 'action-green', label: 'Back', detail: 'Strong edge' };
+  if (ev > -0.04 || maxProfit >= 1.2 || fairOdds >= 1.8) return { className: 'action-amber', label: 'Caution', detail: 'Monitor price' };
   return { className: 'action-red', label: 'Avoid', detail: 'No edge' };
 }
 function renderFixtures(fixtures) {
@@ -247,59 +262,36 @@ function renderFixtures(fixtures) {
     body.innerHTML = '<tr><td colspan="5" class="empty-state"><span class="empty-icon">⌁</span><strong>No fixtures in this window</strong><span>Check the next-day tab or come back later.</span></td></tr>';
     return;
   }
-
   body.innerHTML = fixtures.map((fixture) => {
     const kickoff = new Date(fixture.kickoff);
     const basis = fixture.modelBasis || fixture.probabilitySource || 'Model estimate';
     const confidence = fixture.modelConfidence ? ` · ${fixture.modelConfidence} confidence` : '';
-
     const expectedMinute = Number.isFinite(Number(fixture.firstGoalExpectedMinute)) ? Math.round(Number(fixture.firstGoalExpectedMinute)) : null;
-    const fairOddsAtExpectedMinute = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute)) ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute) : null;
-    const maxProfitOdds = Number.isFinite(Number(fixture.orderRecommendation?.targetOdds)) ? Number(fixture.orderRecommendation.targetOdds) : fairOddsAtExpectedMinute;
+    const fairOdds = Number.isFinite(Number(fixture.inPlayOver05FairOddsAtExpectedMinute)) ? Number(fixture.inPlayOver05FairOddsAtExpectedMinute) : null;
+    const maxProfitOdds = Number.isFinite(Number(fixture.orderRecommendation?.targetOdds)) ? Number(fixture.orderRecommendation.targetOdds) : fairOdds;
     const evValue = Number.isFinite(Number(fixture.orderRecommendation?.expectedValue)) ? Number(fixture.orderRecommendation.expectedValue) : null;
-
-    const decision = getFixtureDecision({ fairOddsAtExpectedMinute, maxProfitOdds, evValue });
+    const decision = getFixtureDecision({ fairOddsAtExpectedMinute: fairOdds, maxProfitOdds, evValue });
     const firstGoalTime = expectedMinute === null ? '—' : `~${expectedMinute}'`;
-    const fairOddsText = fairOddsAtExpectedMinute === null ? '—' : fairOddsAtExpectedMinute.toFixed(2);
+    const fairOddsText = fairOdds === null ? '—' : fairOdds.toFixed(2);
     const maxProfitText = Number.isFinite(Number(maxProfitOdds)) ? Number(maxProfitOdds).toFixed(2) : '—';
     const evText = evValue === null ? '—' : `${evValue >= 0 ? '+' : ''}${evValue.toFixed(3)}`;
-
-    return `<tr class="fixture-row ${decision.className}">
-      <td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td>
-      <td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td>
-      <td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td>
-      <td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td>
-      <td class="probability-cell">
-        <div class="decision-card ${decision.className}">
-          <div class="decision-header">
-            <span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span>
-            <span class="decision-detail">${escapeHtml(decision.detail)}</span>
-          </div>
-          <div class="decision-metrics">
-            <div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div>
-            <div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div>
-            <div class="stat-block"><span>Max profit odds</span><strong>${escapeHtml(maxProfitText)}</strong></div>
-            <div class="stat-block"><span>EV odds</span><strong>${escapeHtml(evText)}</strong></div>
-          </div>
-        </div>
-      </td>
-    </tr>`;
+    return `<tr class="fixture-row ${decision.className}"><td class="kickoff-cell"><span class="kickoff-date">${escapeHtml(kickoff.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span><strong>${escapeHtml(kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</strong></td><td class="match-cell"><strong>${escapeHtml(fixture.homeTeam || 'Home')}</strong><span class="versus">vs</span><strong>${escapeHtml(fixture.awayTeam || 'Away')}</strong></td><td class="league-cell"><strong>${escapeHtml(fixture.league || 'Competition')}</strong><span>${escapeHtml(fixture.country || '')}</span></td><td class="window-cell"><span>${escapeHtml(basis)}${escapeHtml(confidence)}</span></td><td class="probability-cell"><div class="decision-card ${decision.className}"><div class="decision-header"><span class="decision-badge ${decision.className.replace('action-', '')}">${decision.label}</span><span class="decision-detail">${escapeHtml(decision.detail)}</span></div><div class="decision-metrics"><div class="stat-block"><span>Expected goal time</span><strong>${escapeHtml(firstGoalTime)}</strong></div><div class="stat-block"><span>Fair odds</span><strong>${escapeHtml(fairOddsText)}</strong></div><div class="stat-block"><span>Max profit odds</span><strong>${escapeHtml(maxProfitText)}</strong></div><div class="stat-block"><span>EV odds</span><strong>${escapeHtml(evText)}</strong></div></div></div></td></tr>`;
   }).join('');
 }
-
-function clamp(value, min, max) { return Number.isFinite(value) ? Math.min(Math.max(value, min), max) : min; }
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
 viewButtons.forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
 tabButtons.forEach((button) => button.addEventListener('click', () => loadFixtures(Number(button.dataset.day))));
-statsDaySelect.addEventListener('change', (event) => populateStatsInputs(event.target.value));
+statsDaySelect.addEventListener('change', (event) => {
+  populateStatsInputs(event.target.value);
+  loadStatsForDate(event.target.value);
+});
+refreshStatsButton.addEventListener('click', () => loadStatsForDate(statsDaySelect.value, true));
 saveStatsButton.addEventListener('click', saveSelectedDayStats);
 clearStatsButton.addEventListener('click', clearSelectedDayStats);
-
-setActiveView('fixtures');
-renderStatsOptions();
-hydrateRecentStats();
+renderStatsOptions(addDays(getLocalDateKey(), -1));
+loadStatsForDate(statsDaySelect.value);
 loadFixtures(0);
 window.setInterval(() => loadFixtures(activeDay), 10 * 60_000);
