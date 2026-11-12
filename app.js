@@ -75,6 +75,16 @@ function cleanStats(value = {}) {
   return Object.fromEntries(STAT_KEYS.map((key) => [key, validCount(value?.[key])]));
 }
 function getStatsForDate(date) { return cleanStats(readStorage(STATS_STORAGE_KEY)[date]); }
+function saveStatsForDate(date, stats, meta) {
+  const saved = readStorage(STATS_STORAGE_KEY);
+  const metadata = readStorage(STATS_META_KEY);
+  metadata[date] = { version: 2, source: 'pending' };
+  if (!writeStorage(STATS_META_KEY, metadata)) return false;
+  saved[date] = stats;
+  if (!writeStorage(STATS_STORAGE_KEY, saved)) return false;
+  metadata[date] = meta;
+  return writeStorage(STATS_META_KEY, metadata);
+}
 function validCount(value) {
   const count = Number(value);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
@@ -191,9 +201,7 @@ async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = fals
       statsDataStatus.textContent = `INCOMPLETE refresh: ${payload.finishedGames} finished found · ${payload.classifiedGames} classified · ${payload.unclassifiedGames} unclassified (${d.scoreUnavailable || 0} unavailable scores, ${d.eventsMissing || 0} missing events, ${d.eventsInconsistent || 0} inconsistent events, ${d.eventFailures || 0} provider failures, ${d.eventRateLimited || 0} rate-limited, ${d.eventLimit || 0} limited); ${d.fixturePagesMissing || 0} fixture pages missing. Existing saved counts have been kept.`;
       return;
     }
-    saved[date] = stats;
-    const metadata = readStorage(STATS_META_KEY);
-    metadata[date] = {
+    const meta = {
       finishedGames: validCount(payload.finishedGames),
       classifiedGames: validCount(payload.classifiedGames),
       unclassifiedGames: validCount(payload.unclassifiedGames),
@@ -204,8 +212,7 @@ async function loadStatsForDate(date = statsDaySelect.value, forceRefresh = fals
       complete: payload.complete,
       diagnostics: payload.diagnostics
     };
-    writeStorage(STATS_STORAGE_KEY, saved);
-    writeStorage(STATS_META_KEY, metadata);
+    if (!saveStatsForDate(date, stats, meta)) return;
     populateStatsInputs(date);
     renderRecentStats();
   } catch (error) {
@@ -222,11 +229,8 @@ function saveSelectedDayStats() {
   if (Object.hasOwn(saved, date) && !window.confirm('Replace the saved results for this day with unverified manual counts?')) return;
   statsRequestId += 1;
   refreshStatsButton.disabled = false;
-  saved[date] = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
-  if (writeStorage(STATS_STORAGE_KEY, saved)) {
-    const metadata = readStorage(STATS_META_KEY);
-    metadata[date] = { version: 2, source: 'manual', timezone };
-    writeStorage(STATS_META_KEY, metadata);
+  const stats = Object.fromEntries(Object.entries(STATS_FIELDS).map(([key, input]) => [key, validCount(input.value)]));
+  if (saveStatsForDate(date, stats, { version: 2, source: 'manual', timezone })) {
     populateStatsInputs(date);
     renderRecentStats();
     statsDataStatus.textContent = 'Manual counts saved in this browser; they are unverified and excluded from rolling summaries.';

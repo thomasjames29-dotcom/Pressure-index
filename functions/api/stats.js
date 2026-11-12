@@ -22,7 +22,11 @@ export async function onRequestGet({ request, env }) {
     if (forceRefresh) await caches.default.delete(cacheKey);
     else {
       const cached = await caches.default.match(cacheKey);
-      if (cached) return cached;
+      if (cached) {
+        const headers = new Headers(cached.headers);
+        headers.set('Cache-Control', 'no-store');
+        return new Response(cached.body, { status: cached.status, headers });
+      }
     }
   } catch { /* Edge cache is optional. */ }
 
