@@ -393,7 +393,7 @@ function renderFixtures(fixtures) {
 }
 function renderInPlay(matches) {
   if (!matches.length) {
-    inplayResults.innerHTML = '<p>No matches with sufficient live statistics were ranked.</p>';
+    inplayResults.innerHTML = '<p>No results available yet.</p>';
     return;
   }
   inplayResults.innerHTML = [...matches].sort((a, b) => b.rankScore - a.rankScore || b.pressure - a.pressure)
@@ -405,6 +405,8 @@ function renderInPlay(matches) {
 }
 async function sweepInPlay() {
   const batchSize = 8;
+  const batchIntervalMs = 1_000;
+  const maxRetries = 2;
   sweepInplayButton.disabled = true;
   inplayResults.innerHTML = '';
   inplayStatus.textContent = 'Loading live matches…';
@@ -414,8 +416,16 @@ async function sweepInPlay() {
   let processed = 0;
   let unavailable = 0;
   try {
-    const response = await fetch('/api/in-play', { headers: { Accept: 'application/json' }, cache: 'no-store' });
-    const payload = await response.json().catch(() => ({}));
+    let response;
+    let payload;
+    for (let retry = 0; ; retry += 1) {
+      response = await fetch('/api/in-play', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+      payload = await response.json().catch(() => ({}));
+      if (response.status !== 429 || payload.scope === 'daily' || retry >= maxRetries) break;
+      const seconds = retryDelaySeconds(payload.retryAfterSeconds);
+      inplayStatus.textContent = `Provider is temporarily limiting requests. Retrying the fixture list in ${seconds} seconds…`;
+      await sleepInPlay(seconds * 1000);
+    }
     if (!response.ok) throw new Error(payload.error || `Live service returned ${response.status}`);
     if (!Array.isArray(payload.fixtures)) throw new Error('Invalid live fixture list.');
     total = payload.fixtures.length;
@@ -425,26 +435,54 @@ async function sweepInPlay() {
     }
     const selection = selectInPlayFixtures(payload.fixtures, inplayCursors);
     selected = selection.ids;
+    let lastBatchStart = 0;
     for (let i = 0; i < selected.length; i += batchSize) {
-      const batch = selected.slice(i, i + batchSize);
-      inplayStatus.textContent = `Screening ${processed} of ${selected.length} selected matches (${total} eligible)…`;
-      const batchResponse = await fetch('/api/in-play', {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: batch }),
-        cache: 'no-store'
-      });
-      const batchPayload = await batchResponse.json().catch(() => ({}));
-      if (!batchResponse.ok) throw new Error(batchPayload.error || `Live service returned ${batchResponse.status}`);
-      if (!Array.isArray(batchPayload.results) || batchPayload.results.length !== batch.length) throw new Error('Invalid live batch response.');
-      for (const result of batchPayload.results) {
-        if (!result.match) { unavailable += 1; continue; }
-        const match = result.match;
-        matches.push(rankInPlay(match, previousInplay.get(match.id)));
-        previousInplay.set(match.id, match);
+      let pending = selected.slice(i, i + batchSize);
+      let retries = 0;
+      while (pending.length) {
+        const delay = Math.max(0, lastBatchStart + batchIntervalMs - Date.now());
+        if (delay) {
+          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Pausing ${Math.ceil(delay / 1000)} seconds to limit API traffic…`;
+          await sleepInPlay(delay);
+        }
+        inplayStatus.textContent = `Screening ${processed} of ${selected.length} selected matches (${total} eligible)…`;
+        lastBatchStart = Date.now();
+        const batchResponse = await fetch('/api/in-play', {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: pending }),
+          cache: 'no-store'
+        });
+        const batchPayload = await batchResponse.json().catch(() => ({}));
+        if (batchResponse.status === 429 && batchPayload.scope !== 'daily' && retries < maxRetries) {
+          retries += 1;
+          const seconds = retryDelaySeconds(batchPayload.retryAfterSeconds);
+          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Provider is limiting requests; retrying in ${seconds} seconds…`;
+          await sleepInPlay(seconds * 1000);
+          continue;
+        }
+        if (!batchResponse.ok) throw new Error(batchPayload.error || `Live service returned ${batchResponse.status}`);
+        if (!Array.isArray(batchPayload.results) || !Array.isArray(batchPayload.remainingIds)
+          || batchPayload.results.length + batchPayload.remainingIds.length !== pending.length) throw new Error('Invalid live batch response.');
+        for (const result of batchPayload.results) {
+          processed += 1;
+          if (!result.match) { unavailable += 1; continue; }
+          const match = result.match;
+          matches.push(rankInPlay(match, previousInplay.get(match.id)));
+          previousInplay.set(match.id, match);
+        }
+        renderInPlay(matches);
+        pending = batchPayload.remainingIds;
+        if (batchPayload.stopped?.reason === 'provider_auth') throw new Error('Provider credentials or subscription do not allow this request.');
+        if (batchPayload.stopped?.reason === 'rate_limit') {
+          if (batchPayload.stopped.scope === 'daily') throw new Error('Provider reported a daily request limit for the configured API key.');
+          if (!pending.length && i + batchSize >= selected.length) break;
+          if (retries++ >= maxRetries) throw new Error('Provider rate limit remains in effect; try again later.');
+          const seconds = retryDelaySeconds(batchPayload.stopped.retryAfterSeconds);
+          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Provider is limiting requests; retrying in ${seconds} seconds…`;
+          await sleepInPlay(seconds * 1000);
+        } else if (pending.length) throw new Error('Live batch did not complete.');
       }
-      processed += batch.length;
-      renderInPlay(matches);
     }
     inplayCursors = selection.cursors;
     inplayStatus.textContent = `Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${total - processed} not screened. ${total > processed ? 'Major leagues are prioritized; later sweeps rotate through overflow. ' : ''}Results are snapshots, not live updates.`;
@@ -455,6 +493,10 @@ async function sweepInPlay() {
     sweepInplayButton.disabled = false;
   }
 }
+function retryDelaySeconds(value) {
+  return Number.isFinite(value) && value > 0 ? Math.min(300, Math.ceil(value)) : 60;
+}
+function sleepInPlay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }

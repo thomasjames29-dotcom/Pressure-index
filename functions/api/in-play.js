@@ -3,7 +3,7 @@ import { analyzeInPlay, isPriorityLeague } from '../../lib/inplay-model.mjs';
 const API_BASE = 'https://v3.football.api-sports.io';
 const LIST_CACHE_SECONDS = 20;
 const MAX_BATCH = 8;
-const CONCURRENCY = 2;
+const CONCURRENCY = 1;
 const TIMEOUT_MS = 10000;
 
 export async function onRequestGet({ request, env }) {
@@ -47,15 +47,19 @@ export async function onRequestPost({ request, env }) {
         }
         try {
           const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY);
-          let events = null;
-          let eventsError = null;
-          try { events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY); }
-          catch (error) {
-            if (error.rateLimited || error.providerAuth) throw error;
-            eventsError = 'Recent events unavailable.';
+          const observedAt = new Date().toISOString();
+          let match = analyzeInPlay(fixture, stats, null, observedAt);
+          if (!match) {
+            results[index] = { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
+            continue;
           }
-          const match = analyzeInPlay(fixture, stats, events, new Date().toISOString());
-          results[index] = match ? { match, eventsError } : { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
+          try {
+            const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY);
+            match = analyzeInPlay(fixture, stats, events, observedAt);
+          } catch (error) {
+            if (error.rateLimited || error.providerAuth) fatal = error;
+          }
+          results[index] = { match };
         } catch (error) {
           if (error.rateLimited || error.providerAuth) { fatal = error; return; }
           results[index] = { id: ids[index], error: 'Live statistics unavailable.' };
@@ -63,8 +67,16 @@ export async function onRequestPost({ request, env }) {
       }
     }
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
-    if (fatal) throw fatal;
-    return json({ results });
+    if (fatal) {
+      return json({
+        results: results.filter(Boolean),
+        remainingIds: ids.filter((id, index) => !results[index]),
+        stopped: fatal.rateLimited
+          ? { reason: 'rate_limit', scope: fatal.limitScope, retryAfterSeconds: fatal.retryAfterSeconds }
+          : { reason: 'provider_auth' }
+      });
+    }
+    return json({ results, remainingIds: [] });
   } catch (error) {
     return errorResponse(error);
   }
@@ -109,8 +121,18 @@ async function apiGet(path, key) {
     if (!response.ok || errors.length) {
       const error = new Error(errors.join(' · ') || `Provider returned HTTP ${response.status}`);
       error.rateLimited = response.status === 429 || errors.some((value) => /rate.limit|too many requests|quota|request limit/i.test(value));
+      error.limitScope = errors.some((value) => /daily|per day|for the day|day limit/i.test(value)) ? 'daily'
+        : errors.some((value) => /minute|per.min/i.test(value)) ? 'minute' : 'unknown';
       error.providerAuth = response.status === 401 || response.status === 403
         || errors.some((value) => /invalid.*(?:key|token)|(?:key|token).*invalid|subscription/i.test(value));
+      const retryAfter = response.headers.get('Retry-After');
+      const seconds = Number(retryAfter);
+      const date = Date.parse(retryAfter);
+      error.retryAfterSeconds = retryAfter && Number.isFinite(seconds) && seconds > 0
+        ? Math.min(300, Math.ceil(seconds))
+        : Number.isFinite(date) && date > Date.now()
+          ? Math.min(300, Math.ceil((date - Date.now()) / 1000))
+          : 60;
       throw error;
     }
     if (!Array.isArray(payload?.response)) throw new Error('Provider returned an invalid response.');
@@ -119,9 +141,14 @@ async function apiGet(path, key) {
 }
 
 function errorResponse(error) {
-  if (error?.rateLimited) return json({ error: 'Provider rate limit or quota reached. Please try again later.' }, 429);
+  if (error?.rateLimited) return json({ error: limitMessage(error.limitScope), scope: error.limitScope, retryAfterSeconds: error.retryAfterSeconds }, 429);
   if (error?.providerAuth) return json({ error: 'Provider credentials or subscription do not allow this request.' }, 502);
   return json({ error: 'Could not load live fixtures from the provider.' }, 502);
+}
+function limitMessage(scope) {
+  if (scope === 'daily') return 'Provider reported a daily request limit for the configured API key.';
+  if (scope === 'minute') return 'Provider reported a per-minute request limit.';
+  return 'Provider returned a rate-limit response; its scope was not specified.';
 }
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {

@@ -57,15 +57,18 @@ test('batch caps inputs, rejects non-live IDs and limits provider concurrency', 
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 
-test('provider quota failure is surfaced and stops a batch', async () => {
+test('provider quota failure is surfaced and preserves unprocessed matches', async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1)])); } } };
   globalThis.fetch = async () => new Response(JSON.stringify({ errors: { requests: 'Daily quota exceeded' } }), { status: 429 });
   try {
     const response = await onRequestPost({ request: request('POST', { ids: ['1'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
-    assert.equal(response.status, 429);
-    assert.match((await response.json()).error, /quota/);
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.stopped.reason, 'rate_limit');
+    assert.equal(result.stopped.scope, 'daily');
+    assert.deepEqual(result.remainingIds, ['1']);
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 
@@ -81,7 +84,27 @@ test('a failed events request preserves the match and reports missing context', 
   try {
     const response = await onRequestPost({ request: request('POST', { ids: ['1'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
     const result = (await response.json()).results[0];
-    assert.equal(result.eventsError, 'Recent events unavailable.');
     assert.equal(result.match.eventsAvailable, false);
+  } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
+});
+
+test('rate limit during events keeps statistics and reports retry delay', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1), fixture(2)])); } } };
+  globalThis.fetch = async (url) => String(url).includes('/events')
+    ? new Response(JSON.stringify({ errors: { rateLimit: 'Per minute request limit reached' } }), { status: 429, headers: { 'Retry-After': '7' } })
+    : new Response(JSON.stringify({
+      response: [{ statistics: [{ type: 'Total Shots', value: 3 }] }, { statistics: [{ type: 'Total Shots', value: 2 }] }]
+    }));
+  try {
+    const response = await onRequestPost({ request: request('POST', { ids: ['1', '2'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
+    const result = await response.json();
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].match.id, '1');
+    assert.equal(result.results[0].match.eventsAvailable, false);
+    assert.deepEqual(result.remainingIds, ['2']);
+    assert.equal(result.stopped.scope, 'minute');
+    assert.equal(result.stopped.retryAfterSeconds, 7);
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
