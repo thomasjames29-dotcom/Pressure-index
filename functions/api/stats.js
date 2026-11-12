@@ -1,7 +1,7 @@
 const API_BASE = 'https://v3.football.api-sports.io';
 const CACHE_SECONDS = 300;
 const REQUEST_TIMEOUT_MS = 10_000;
-const EVENT_CONCURRENCY = 2;
+const MAX_FIXTURE_BATCH = 20;
 const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN']);
 const STAT_KEYS = ['noGoals', 'min0To20', 'min21ToHalftime', 'min45To75', 'min76ToFinish'];
 
@@ -30,28 +30,38 @@ export async function onRequestGet({ request, env }) {
     const counts = Object.fromEntries(STAT_KEYS.map((key) => [key, 0]));
     let unclassified = 0;
 
-    await mapWithConcurrency(finished, EVENT_CONCURRENCY, async (fixture) => {
+    const scored = [];
+    for (const fixture of finished) {
       const homeGoals = readGoalCount(fixture?.goals?.home);
       const awayGoals = readGoalCount(fixture?.goals?.away);
       if (homeGoals === null || awayGoals === null) {
         unclassified += 1;
-        return;
+        continue;
       }
 
       const expectedGoalEvents = homeGoals + awayGoals;
       if (expectedGoalEvents === 0) {
         counts.noGoals += 1;
-        return;
+        continue;
       }
 
-      const fixtureId = fixture?.fixture?.id;
-      if (fixtureId === undefined) {
+      const fixtureId = String(fixture?.fixture?.id ?? '');
+      if (!/^[1-9]\d{0,14}$/.test(fixtureId)) {
         unclassified += 1;
-        return;
+        continue;
       }
-
-      try {
-        const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(fixtureId)}`, env.APIFOOTBALL_KEY);
+      scored.push({ fixtureId, expectedGoalEvents });
+    }
+    for (let index = 0; index < scored.length; index += MAX_FIXTURE_BATCH) {
+      const batch = scored.slice(index, index + MAX_FIXTURE_BATCH);
+      const details = await apiGet(`/fixtures?ids=${batch.map(({ fixtureId }) => fixtureId).join('-')}`, env.APIFOOTBALL_KEY);
+      const byId = new Map(details.map((item) => [String(item?.fixture?.id ?? ''), item]));
+      for (const { fixtureId, expectedGoalEvents } of batch) {
+        const events = byId.get(fixtureId)?.events;
+        if (!Array.isArray(events)) {
+          unclassified += 1;
+          continue;
+        }
         const goals = events
           .filter(isMatchGoal)
           .sort((a, b) => goalElapsedMinute(a) - goalElapsedMinute(b));
@@ -60,13 +70,11 @@ export async function onRequestGet({ request, env }) {
         // for every goal. Missing/extra events must not silently skew first-goal bins.
         if (goals.length !== expectedGoalEvents) {
           unclassified += 1;
-          return;
+          continue;
         }
         classifyFirstGoal(goalElapsedMinute(goals[0]), counts);
-      } catch {
-        unclassified += 1;
       }
-    });
+    }
 
     const classifiedGames = STAT_KEYS.reduce((sum, key) => sum + counts[key], 0);
     const result = json({
@@ -118,17 +126,6 @@ function isRealDate(value) {
 function validTimezone(candidate) {
   try { new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date()); return candidate; }
   catch { return 'Europe/London'; }
-}
-async function mapWithConcurrency(items, limit, mapper) {
-  let next = 0;
-  async function worker() {
-    while (true) {
-      const index = next++;
-      if (index >= items.length) return;
-      await mapper(items[index]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 async function apiGet(path, key) {
   const controller = new AbortController();

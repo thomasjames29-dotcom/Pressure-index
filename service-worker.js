@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pressure-index-v9';
+const CACHE_NAME = 'pressure-index-v10';
 const APP_SHELL = ['/', '/index.html', '/styles.css', '/goal-timing.css', '/model-analysis.css', '/match-card-summary.css', '/app.js', '/lib/browser-calibration.mjs', '/lib/inplay-model.mjs', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));

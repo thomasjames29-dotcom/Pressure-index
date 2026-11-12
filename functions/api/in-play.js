@@ -2,8 +2,7 @@ import { analyzeInPlay, isPriorityLeague } from '../../lib/inplay-model.mjs';
 
 const API_BASE = 'https://v3.football.api-sports.io';
 const LIST_CACHE_SECONDS = 20;
-const MAX_BATCH = 8;
-const MAX_EVENT_ENRICHMENTS_PER_BATCH = 2;
+const MAX_BATCH = 20;
 const PROVIDER_REQUEST_INTERVAL_MS = 250;
 const TIMEOUT_MS = 10000;
 
@@ -30,77 +29,50 @@ export async function onRequestPost({ request, env }) {
     || new Set(ids).size !== ids.length) {
     return json({ error: `Provide between 1 and ${MAX_BATCH} distinct fixture IDs.` }, 400);
   }
-  const includeEvents = payload.includeEvents !== false;
-
   try {
     const paceProviderRequests = createProviderPacer();
     const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY, paceProviderRequests);
     const byId = new Map(fixtures.map((item) => [String(item.fixture.id), item]));
     const results = new Array(ids.length);
-    const analyzable = [];
-    let fatal = null;
+    const eligibleIds = [];
     for (let index = 0; index < ids.length; index += 1) {
-      const fixture = byId.get(ids[index]);
-      if (!fixture) {
+      if (!byId.has(ids[index])) {
         results[index] = { id: ids[index], error: 'Match is no longer eligible or live.' };
-        continue;
-      }
-      try {
-        const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
-        const observedAt = new Date().toISOString();
-        const match = analyzeInPlay(fixture, stats, null, observedAt);
-        if (!match) {
-          results[index] = { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
-          continue;
-        }
-        results[index] = { match: { ...match, eventsSkipped: true } };
-        analyzable.push({ index, fixture, stats, observedAt });
-      } catch (error) {
-        if (error.rateLimited || error.providerAuth) { fatal = error; break; }
-        results[index] = { id: ids[index], error: 'Live statistics unavailable.' };
-      }
+      } else eligibleIds.push(ids[index]);
     }
 
-    let eventLimit = null;
-    if (!fatal && includeEvents) {
-      const eventCandidates = [...analyzable]
-        .sort((a, b) => results[b.index].match.pressure - results[a.index].match.pressure || a.index - b.index)
-        .slice(0, MAX_EVENT_ENRICHMENTS_PER_BATCH);
-      for (const candidate of eventCandidates) {
-        delete results[candidate.index].match.eventsSkipped;
-        try {
-          const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[candidate.index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
-          results[candidate.index] = {
-            match: analyzeInPlay(candidate.fixture, candidate.stats, events, candidate.observedAt)
-          };
-        } catch (error) {
-          if (error.rateLimited || error.providerAuth) {
-            eventLimit = {
-              scope: error.limitScope,
-              reason: error.rateLimited ? 'rate_limit' : 'provider_auth',
-              diagnostic: error.diagnostic
-            };
-            break;
-          }
-        }
-      }
-    }
-
-    if (fatal) {
+    if (!eligibleIds.length) return json({ results, remainingIds: [] });
+    let details;
+    try {
+      details = await apiGet(`/fixtures?ids=${eligibleIds.join('-')}`, env.APIFOOTBALL_KEY, paceProviderRequests);
+    } catch (error) {
+      if (!error.rateLimited && !error.providerAuth) throw error;
       return json({
         results: results.filter(Boolean),
-        remainingIds: ids.filter((id, index) => !results[index]),
-        stopped: fatal.rateLimited
-          ? {
-            reason: 'rate_limit',
-            scope: fatal.limitScope,
-            retryAfterSeconds: fatal.retryAfterSeconds,
-            diagnostic: fatal.diagnostic
-          }
+        remainingIds: eligibleIds,
+        stopped: error.rateLimited
+          ? { reason: 'rate_limit', scope: error.limitScope, retryAfterSeconds: error.retryAfterSeconds, diagnostic: error.diagnostic }
           : { reason: 'provider_auth' }
       });
     }
-    return json({ results, remainingIds: [], ...(eventLimit ? { eventLimit } : {}) });
+
+    const detailsById = new Map(details.map((item) => [String(item?.fixture?.id ?? ''), item]));
+    const observedAt = new Date().toISOString();
+    for (let index = 0; index < ids.length; index += 1) {
+      if (results[index]) continue;
+      const fixture = detailsById.get(ids[index]);
+      if (!fixture) {
+        results[index] = { id: ids[index], error: 'Live fixture details unavailable.' };
+        continue;
+      }
+      if (!isEligibleFixture(fixture)) {
+        results[index] = { id: ids[index], error: 'Match is no longer eligible or live.' };
+        continue;
+      }
+      const match = analyzeInPlay(fixture, fixture.statistics, fixture.events, observedAt);
+      results[index] = match ? { match } : { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
+    }
+    return json({ results, remainingIds: [] });
   } catch (error) {
     return errorResponse(error);
   }
@@ -123,13 +95,17 @@ async function getEligibleFixtures(origin, key, paceProviderRequests) {
   }
   const unique = new Map();
   for (const item of fixtures) {
-    const id = String(item?.fixture?.id ?? '');
-    const elapsed = item?.fixture?.status?.elapsed;
-    if (/^[1-9]\d{0,14}$/.test(id) && ['1H', '2H'].includes(item.fixture.status?.short)
-      && Number.isFinite(Number(elapsed)) && elapsed !== null && elapsed !== ''
-      && Number(elapsed) >= 10 && Number(elapsed) <= 80) unique.set(id, item);
+    if (isEligibleFixture(item)) unique.set(String(item.fixture.id), item);
   }
   return [...unique.values()].sort((a, b) => Number(a.fixture.id) - Number(b.fixture.id));
+}
+
+function isEligibleFixture(item) {
+  const id = String(item?.fixture?.id ?? '');
+  const elapsed = item?.fixture?.status?.elapsed;
+  return /^[1-9]\d{0,14}$/.test(id) && ['1H', '2H'].includes(item.fixture.status?.short)
+    && Number.isFinite(Number(elapsed)) && elapsed !== null && elapsed !== ''
+    && Number(elapsed) >= 10 && Number(elapsed) <= 80;
 }
 
 async function apiGet(path, key, paceProviderRequests) {
@@ -153,7 +129,7 @@ async function apiGet(path, key, paceProviderRequests) {
       error.limitScope = daily === 'exhausted' ? 'daily'
         : minute === 'exhausted' ? 'minute' : reportedScope;
       error.diagnostic = {
-        endpoint: path.startsWith('/fixtures/statistics') ? 'statistics' : path.startsWith('/fixtures/events') ? 'events' : 'fixtures',
+        endpoint: path.startsWith('/fixtures?ids=') ? 'details' : 'fixtures',
         httpStatus: response.status,
         dailyQuota: daily,
         minuteQuota: minute
