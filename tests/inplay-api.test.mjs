@@ -94,7 +94,37 @@ test('provider calls are spaced and a failed events request preserves the match'
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 
-test('rate limit during events keeps statistics and reports retry delay', async () => {
+test('statistics are fetched for the full batch before events enrich only top-pressure matches', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1), fixture(2), fixture(3)])); } } };
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    calls.push(`${requestUrl.pathname}?${requestUrl.searchParams}`);
+    const id = Number(requestUrl.searchParams.get('fixture'));
+    const response = requestUrl.pathname.endsWith('/statistics')
+      ? [
+        { statistics: [{ type: 'Total Shots', value: id }, { type: 'Shots on Goal', value: id }] },
+        { statistics: [{ type: 'Total Shots', value: id }, { type: 'Shots on Goal', value: 0 }] }
+      ]
+      : [];
+    return new Response(JSON.stringify({ response }));
+  };
+  try {
+    const response = await onRequestPost({ request: request('POST', { ids: ['1', '2', '3'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
+    const result = await response.json();
+    assert.deepEqual(calls.map((call) => call.split('?')[0]), [
+      '/fixtures/statistics', '/fixtures/statistics', '/fixtures/statistics', '/fixtures/events', '/fixtures/events'
+    ]);
+    assert.deepEqual(calls.slice(3).map((call) => new URL(`https://example.test${call}`).searchParams.get('fixture')), ['3', '2']);
+    assert.equal(result.results.length, 3);
+    assert.equal(result.results[0].match.eventsSkipped, true);
+    assert.equal(result.results[2].match.eventsAvailable, true);
+  } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
+});
+
+test('event rate limits preserve all statistics and do not leave matches unprocessed', async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1), fixture(2)])); } } };
@@ -106,12 +136,13 @@ test('rate limit during events keeps statistics and reports retry delay', async 
   try {
     const response = await onRequestPost({ request: request('POST', { ids: ['1', '2'] }), env: { APIFOOTBALL_KEY: 'test-key' } });
     const result = await response.json();
-    assert.equal(result.results.length, 1);
+    assert.equal(result.results.length, 2);
     assert.equal(result.results[0].match.id, '1');
-    assert.equal(result.results[0].match.eventsAvailable, false);
-    assert.deepEqual(result.remainingIds, ['2']);
-    assert.equal(result.stopped.scope, 'minute');
-    assert.equal(result.stopped.retryAfterSeconds, 7);
+    assert.equal(result.results[1].match.id, '2');
+    assert.deepEqual(result.remainingIds, []);
+    assert.equal(result.eventLimit.scope, 'minute');
+    assert.equal(result.eventLimit.diagnostic.endpoint, 'events');
+    assert.equal(result.stopped, undefined);
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
 

@@ -3,7 +3,7 @@ import { analyzeInPlay, isPriorityLeague } from '../../lib/inplay-model.mjs';
 const API_BASE = 'https://v3.football.api-sports.io';
 const LIST_CACHE_SECONDS = 20;
 const MAX_BATCH = 8;
-const CONCURRENCY = 1;
+const MAX_EVENT_ENRICHMENTS_PER_BATCH = 2;
 const PROVIDER_REQUEST_INTERVAL_MS = 250;
 const TIMEOUT_MS = 10000;
 
@@ -30,45 +30,62 @@ export async function onRequestPost({ request, env }) {
     || new Set(ids).size !== ids.length) {
     return json({ error: `Provide between 1 and ${MAX_BATCH} distinct fixture IDs.` }, 400);
   }
+  const includeEvents = payload.includeEvents !== false;
 
   try {
     const paceProviderRequests = createProviderPacer();
     const fixtures = await getEligibleFixtures(request.url, env.APIFOOTBALL_KEY, paceProviderRequests);
     const byId = new Map(fixtures.map((item) => [String(item.fixture.id), item]));
     const results = new Array(ids.length);
-    let next = 0;
+    const analyzable = [];
     let fatal = null;
-    async function worker() {
-      while (!fatal) {
-        const index = next++;
-        if (index >= ids.length) return;
-        const fixture = byId.get(ids[index]);
-        if (!fixture) {
-          results[index] = { id: ids[index], error: 'Match is no longer eligible or live.' };
+    for (let index = 0; index < ids.length; index += 1) {
+      const fixture = byId.get(ids[index]);
+      if (!fixture) {
+        results[index] = { id: ids[index], error: 'Match is no longer eligible or live.' };
+        continue;
+      }
+      try {
+        const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
+        const observedAt = new Date().toISOString();
+        const match = analyzeInPlay(fixture, stats, null, observedAt);
+        if (!match) {
+          results[index] = { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
           continue;
         }
+        results[index] = { match: { ...match, eventsSkipped: true } };
+        analyzable.push({ index, fixture, stats, observedAt });
+      } catch (error) {
+        if (error.rateLimited || error.providerAuth) { fatal = error; break; }
+        results[index] = { id: ids[index], error: 'Live statistics unavailable.' };
+      }
+    }
+
+    let eventLimit = null;
+    if (!fatal && includeEvents) {
+      const eventCandidates = [...analyzable]
+        .sort((a, b) => results[b.index].match.pressure - results[a.index].match.pressure || a.index - b.index)
+        .slice(0, MAX_EVENT_ENRICHMENTS_PER_BATCH);
+      for (const candidate of eventCandidates) {
+        delete results[candidate.index].match.eventsSkipped;
         try {
-          const stats = await apiGet(`/fixtures/statistics?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
-          const observedAt = new Date().toISOString();
-          let match = analyzeInPlay(fixture, stats, null, observedAt);
-          if (!match) {
-            results[index] = { id: ids[index], error: 'Insufficient shot statistics for both teams.' };
-            continue;
-          }
-          try {
-            const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
-            match = analyzeInPlay(fixture, stats, events, observedAt);
-          } catch (error) {
-            if (error.rateLimited || error.providerAuth) fatal = error;
-          }
-          results[index] = { match };
+          const events = await apiGet(`/fixtures/events?fixture=${encodeURIComponent(ids[candidate.index])}`, env.APIFOOTBALL_KEY, paceProviderRequests);
+          results[candidate.index] = {
+            match: analyzeInPlay(candidate.fixture, candidate.stats, events, candidate.observedAt)
+          };
         } catch (error) {
-          if (error.rateLimited || error.providerAuth) { fatal = error; return; }
-          results[index] = { id: ids[index], error: 'Live statistics unavailable.' };
+          if (error.rateLimited || error.providerAuth) {
+            eventLimit = {
+              scope: error.limitScope,
+              reason: error.rateLimited ? 'rate_limit' : 'provider_auth',
+              diagnostic: error.diagnostic
+            };
+            break;
+          }
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker));
+
     if (fatal) {
       return json({
         results: results.filter(Boolean),
@@ -83,7 +100,7 @@ export async function onRequestPost({ request, env }) {
           : { reason: 'provider_auth' }
       });
     }
-    return json({ results, remainingIds: [] });
+    return json({ results, remainingIds: [], ...(eventLimit ? { eventLimit } : {}) });
   } catch (error) {
     return errorResponse(error);
   }

@@ -399,7 +399,7 @@ function renderInPlay(matches) {
   inplayResults.innerHTML = [...matches].sort((a, b) => b.rankScore - a.rankScore || b.pressure - a.pressure)
     .map((match, index) => {
       const metric = (value) => value === null ? '—' : value;
-      const flags = [match.recentGoal ? 'Recent goal' : '', match.recentRed ? 'Recent red card' : '', !match.eventsAvailable ? 'Recent events unavailable' : ''].filter(Boolean).join(' · ');
+      const flags = [match.recentGoal ? 'Recent goal' : '', match.recentRed ? 'Recent red card' : '', !match.eventsAvailable && !match.eventsSkipped ? 'Recent events unavailable' : ''].filter(Boolean).join(' · ');
       return `<article class="inplay-card"><p>${index + 1}. ${escapeHtml(match.league)}${match.country ? ` · ${escapeHtml(match.country)}` : ''}</p><h3>${escapeHtml(match.homeTeam)} vs ${escapeHtml(match.awayTeam)}</h3><p>${escapeHtml(match.score)} · ${escapeHtml(match.elapsed)}' · sampled ${escapeHtml(new Date(match.observedAt).toLocaleTimeString())}</p><div class="inplay-score">Signal ${escapeHtml(match.rankScore)}/100</div><p>Pressure ${escapeHtml(match.pressure)}/100 · ${match.momentum === null ? 'Momentum unavailable' : `Momentum ${escapeHtml(match.momentum)}/100`}</p><p>Shots ${escapeHtml(metric(match.totals.shots))} · On target ${escapeHtml(metric(match.totals.onTarget))} · Corners ${escapeHtml(metric(match.totals.corners))} · Dangerous attacks ${escapeHtml(metric(match.totals.dangerous))} · xG ${escapeHtml(metric(match.totals.xg))}</p>${flags ? `<p class="inplay-flags">${escapeHtml(flags)}</p>` : ''}</article>`;
     }).join('');
 }
@@ -415,6 +415,8 @@ async function sweepInPlay() {
   let total = 0;
   let processed = 0;
   let unavailable = 0;
+  let eventLimitMessage = '';
+  let includeEvents = true;
   try {
     let response;
     let payload;
@@ -450,7 +452,7 @@ async function sweepInPlay() {
         const batchResponse = await fetch('/api/in-play', {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: pending }),
+          body: JSON.stringify({ ids: pending, includeEvents }),
           cache: 'no-store'
         });
         const batchPayload = await batchResponse.json().catch(() => ({}));
@@ -464,6 +466,10 @@ async function sweepInPlay() {
         if (!batchResponse.ok) throw new Error(batchResponse.status === 429 ? describeInPlayLimit(batchPayload) : batchPayload.error || `Live service returned ${batchResponse.status}`);
         if (!Array.isArray(batchPayload.results) || !Array.isArray(batchPayload.remainingIds)
           || batchPayload.results.length + batchPayload.remainingIds.length !== pending.length) throw new Error('Invalid live batch response.');
+        if (batchPayload.eventLimit) {
+          eventLimitMessage = describeInPlayLimit(batchPayload.eventLimit);
+          includeEvents = false;
+        }
         for (const result of batchPayload.results) {
           processed += 1;
           if (!result.match) { unavailable += 1; continue; }
@@ -485,7 +491,7 @@ async function sweepInPlay() {
       }
     }
     inplayCursors = selection.cursors;
-    inplayStatus.textContent = `Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${total - processed} not screened. ${total > processed ? 'Major leagues are prioritized; later sweeps rotate through overflow. ' : ''}Results are snapshots, not live updates.`;
+    inplayStatus.textContent = `Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${total - processed} not screened. ${total > processed ? 'Major leagues are prioritized; later sweeps rotate through overflow. ' : ''}${eventLimitMessage ? `${eventLimitMessage} Pressure rankings are complete; event context is partial. ` : 'Event context is fetched only for the strongest pressure matches. '}Results are snapshots, not live updates.`;
   } catch (error) {
     renderInPlay(matches);
     inplayStatus.textContent = `Sweep stopped: ${error.message} Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${Math.max(0, total - processed)} not screened.`;
