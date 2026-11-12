@@ -497,8 +497,9 @@ function describeInPlayLimit(payload) {
   const diagnostic = payload.diagnostic || {};
   const endpoint = { fixtures: 'live fixtures', statistics: 'live statistics', events: 'match events' }[diagnostic.endpoint] || 'football data';
   const status = Number.isInteger(diagnostic.httpStatus) ? `HTTP ${diagnostic.httpStatus}` : 'provider limit';
+  const scope = payload.scope === 'daily' ? 'daily limit' : payload.scope === 'minute' ? 'per-minute limit' : null;
   const state = (value) => ['available', 'exhausted'].includes(value) ? value : 'unknown';
-  return `Provider rejected ${endpoint} (${status}; daily allowance ${state(diagnostic.dailyQuota)}; per-minute allowance ${state(diagnostic.minuteQuota)}).`;
+  return `Provider rejected ${endpoint} (${scope ? `${scope}; ` : ''}${status}; daily allowance ${state(diagnostic.dailyQuota)}; per-minute allowance ${state(diagnostic.minuteQuota)}).`;
 }
 function retryDelaySeconds(value) {
   return Number.isFinite(value) && value > 0 ? Math.min(300, Math.ceil(value)) : 60;
