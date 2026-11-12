@@ -423,10 +423,10 @@ async function sweepInPlay() {
       payload = await response.json().catch(() => ({}));
       if (response.status !== 429 || payload.scope === 'daily' || retry >= maxRetries) break;
       const seconds = retryDelaySeconds(payload.retryAfterSeconds);
-      inplayStatus.textContent = `Provider is temporarily limiting requests. Retrying the fixture list in ${seconds} seconds…`;
+      inplayStatus.textContent = `${describeInPlayLimit(payload)} Retrying the fixture list in ${seconds} seconds…`;
       await sleepInPlay(seconds * 1000);
     }
-    if (!response.ok) throw new Error(payload.error || `Live service returned ${response.status}`);
+    if (!response.ok) throw new Error(response.status === 429 ? describeInPlayLimit(payload) : payload.error || `Live service returned ${response.status}`);
     if (!Array.isArray(payload.fixtures)) throw new Error('Invalid live fixture list.');
     total = payload.fixtures.length;
     if (!total) {
@@ -457,11 +457,11 @@ async function sweepInPlay() {
         if (batchResponse.status === 429 && batchPayload.scope !== 'daily' && retries < maxRetries) {
           retries += 1;
           const seconds = retryDelaySeconds(batchPayload.retryAfterSeconds);
-          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Provider is limiting requests; retrying in ${seconds} seconds…`;
+          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. ${describeInPlayLimit(batchPayload)} Retrying in ${seconds} seconds…`;
           await sleepInPlay(seconds * 1000);
           continue;
         }
-        if (!batchResponse.ok) throw new Error(batchPayload.error || `Live service returned ${batchResponse.status}`);
+        if (!batchResponse.ok) throw new Error(batchResponse.status === 429 ? describeInPlayLimit(batchPayload) : batchPayload.error || `Live service returned ${batchResponse.status}`);
         if (!Array.isArray(batchPayload.results) || !Array.isArray(batchPayload.remainingIds)
           || batchPayload.results.length + batchPayload.remainingIds.length !== pending.length) throw new Error('Invalid live batch response.');
         for (const result of batchPayload.results) {
@@ -475,11 +475,11 @@ async function sweepInPlay() {
         pending = batchPayload.remainingIds;
         if (batchPayload.stopped?.reason === 'provider_auth') throw new Error('Provider credentials or subscription do not allow this request.');
         if (batchPayload.stopped?.reason === 'rate_limit') {
-          if (batchPayload.stopped.scope === 'daily') throw new Error('Provider reported a daily request limit for the configured API key.');
+          if (batchPayload.stopped.scope === 'daily') throw new Error(describeInPlayLimit(batchPayload.stopped));
           if (!pending.length && i + batchSize >= selected.length) break;
-          if (retries++ >= maxRetries) throw new Error('Provider rate limit remains in effect; try again later.');
+          if (retries++ >= maxRetries) throw new Error(`${describeInPlayLimit(batchPayload.stopped)} Automatic retries exhausted.`);
           const seconds = retryDelaySeconds(batchPayload.stopped.retryAfterSeconds);
-          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Provider is limiting requests; retrying in ${seconds} seconds…`;
+          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. ${describeInPlayLimit(batchPayload.stopped)} Retrying in ${seconds} seconds…`;
           await sleepInPlay(seconds * 1000);
         } else if (pending.length) throw new Error('Live batch did not complete.');
       }
@@ -492,6 +492,13 @@ async function sweepInPlay() {
   } finally {
     sweepInplayButton.disabled = false;
   }
+}
+function describeInPlayLimit(payload) {
+  const diagnostic = payload.diagnostic || {};
+  const endpoint = { fixtures: 'live fixtures', statistics: 'live statistics', events: 'match events' }[diagnostic.endpoint] || 'football data';
+  const status = Number.isInteger(diagnostic.httpStatus) ? `HTTP ${diagnostic.httpStatus}` : 'provider limit';
+  const state = (value) => ['available', 'exhausted'].includes(value) ? value : 'unknown';
+  return `Provider rejected ${endpoint} (${status}; daily allowance ${state(diagnostic.dailyQuota)}; per-minute allowance ${state(diagnostic.minuteQuota)}).`;
 }
 function retryDelaySeconds(value) {
   return Number.isFinite(value) && value > 0 ? Math.min(300, Math.ceil(value)) : 60;

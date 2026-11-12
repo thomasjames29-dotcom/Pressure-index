@@ -72,7 +72,12 @@ export async function onRequestPost({ request, env }) {
         results: results.filter(Boolean),
         remainingIds: ids.filter((id, index) => !results[index]),
         stopped: fatal.rateLimited
-          ? { reason: 'rate_limit', scope: fatal.limitScope, retryAfterSeconds: fatal.retryAfterSeconds }
+          ? {
+            reason: 'rate_limit',
+            scope: fatal.limitScope,
+            retryAfterSeconds: fatal.retryAfterSeconds,
+            diagnostic: fatal.diagnostic
+          }
           : { reason: 'provider_auth' }
       });
     }
@@ -121,8 +126,21 @@ async function apiGet(path, key) {
     if (!response.ok || errors.length) {
       const error = new Error(errors.join(' · ') || `Provider returned HTTP ${response.status}`);
       error.rateLimited = response.status === 429 || errors.some((value) => /rate.limit|too many requests|quota|request limit/i.test(value));
-      error.limitScope = errors.some((value) => /daily|per day|for the day|day limit/i.test(value)) ? 'daily'
+      const daily = quotaState(response.headers.get('x-ratelimit-requests-remaining'));
+      const minute = quotaState(response.headers.get('x-ratelimit-remaining'));
+      const reportedScope = errors.some((value) => /daily|per day|for the day|day limit/i.test(value)) ? 'daily'
         : errors.some((value) => /minute|per.min/i.test(value)) ? 'minute' : 'unknown';
+      error.limitScope = daily === 'exhausted' ? 'daily'
+        : minute === 'exhausted' ? 'minute' : reportedScope;
+      error.diagnostic = {
+        endpoint: path.startsWith('/fixtures/statistics') ? 'statistics' : path.startsWith('/fixtures/events') ? 'events' : 'fixtures',
+        httpStatus: response.status,
+        dailyQuota: daily,
+        minuteQuota: minute
+      };
+      if (error.rateLimited) {
+        console.warn('In-play provider limit', JSON.stringify({ scope: error.limitScope, ...error.diagnostic }));
+      }
       error.providerAuth = response.status === 401 || response.status === 403
         || errors.some((value) => /invalid.*(?:key|token)|(?:key|token).*invalid|subscription/i.test(value));
       const retryAfter = response.headers.get('Retry-After');
@@ -141,9 +159,18 @@ async function apiGet(path, key) {
 }
 
 function errorResponse(error) {
-  if (error?.rateLimited) return json({ error: limitMessage(error.limitScope), scope: error.limitScope, retryAfterSeconds: error.retryAfterSeconds }, 429);
+  if (error?.rateLimited) return json({
+    error: limitMessage(error.limitScope),
+    scope: error.limitScope,
+    retryAfterSeconds: error.retryAfterSeconds,
+    diagnostic: error.diagnostic
+  }, 429);
   if (error?.providerAuth) return json({ error: 'Provider credentials or subscription do not allow this request.' }, 502);
   return json({ error: 'Could not load live fixtures from the provider.' }, 502);
+}
+function quotaState(header) {
+  if (header === null || !/^\d+$/.test(header.trim())) return 'unknown';
+  return Number(header) === 0 ? 'exhausted' : 'available';
 }
 function limitMessage(scope) {
   if (scope === 'daily') return 'Provider reported a daily request limit for the configured API key.';

@@ -108,3 +108,25 @@ test('rate limit during events keeps statistics and reports retry delay', async 
     assert.equal(result.stopped.retryAfterSeconds, 7);
   } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
+
+test('diagnostic distinguishes minute and daily headroom without exposing values or keys', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  globalThis.caches = { default: { async match() { return new Response(JSON.stringify([fixture(1)])); } } };
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    errors: { rateLimit: 'Too many requests' }
+  }), {
+    status: 200,
+    headers: { 'x-ratelimit-requests-remaining': '43210', 'x-ratelimit-remaining': '0' }
+  });
+  try {
+    const response = await onRequestPost({ request: request('POST', { ids: ['1'] }), env: { APIFOOTBALL_KEY: 'test-secret-key' } });
+    const data = await response.json();
+    assert.equal(data.stopped.scope, 'minute');
+    assert.deepEqual(data.stopped.diagnostic, {
+      endpoint: 'statistics', httpStatus: 200, dailyQuota: 'available', minuteQuota: 'exhausted'
+    });
+    assert.ok(!JSON.stringify(data).includes('43210'));
+    assert.ok(!JSON.stringify(data).includes('test-secret-key'));
+  } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
+});
