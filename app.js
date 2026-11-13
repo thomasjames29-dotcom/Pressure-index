@@ -411,7 +411,6 @@ function renderInPlay(matches) {
 async function sweepInPlay() {
   const batchSize = 20;
   const batchIntervalMs = 1_000;
-  const maxRetries = 2;
   sweepInplayButton.disabled = true;
   inplayResults.innerHTML = '';
   inplayStatus.textContent = 'Loading live matches…';
@@ -421,16 +420,8 @@ async function sweepInPlay() {
   let processed = 0;
   let unavailable = 0;
   try {
-    let response;
-    let payload;
-    for (let retry = 0; ; retry += 1) {
-      response = await fetch('/api/in-play', { headers: { Accept: 'application/json' }, cache: 'no-store' });
-      payload = await response.json().catch(() => ({}));
-      if (response.status !== 429 || payload.scope === 'daily' || retry >= maxRetries) break;
-      const seconds = retryDelaySeconds(payload.retryAfterSeconds);
-      inplayStatus.textContent = `${describeInPlayLimit(payload)} Retrying the fixture list in ${seconds} seconds…`;
-      await sleepInPlay(seconds * 1000);
-    }
+    const response = await fetch('/api/in-play', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(response.status === 429 ? describeInPlayLimit(payload) : payload.error || `Live service returned ${response.status}`);
     if (!Array.isArray(payload.fixtures)) throw new Error('Invalid live fixture list.');
     total = payload.fixtures.length;
@@ -442,58 +433,42 @@ async function sweepInPlay() {
     selected = selection.ids;
     let lastBatchStart = 0;
     for (let i = 0; i < selected.length; i += batchSize) {
-      let pending = selected.slice(i, i + batchSize);
-      let retries = 0;
-      while (pending.length) {
-        const delay = Math.max(0, lastBatchStart + batchIntervalMs - Date.now());
-        if (delay) {
-          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Pausing ${Math.ceil(delay / 1000)} seconds to limit API traffic…`;
-          await sleepInPlay(delay);
-        }
-        inplayStatus.textContent = `Screening ${processed} of ${selected.length} selected matches (${total} eligible)…`;
-        lastBatchStart = Date.now();
-        const batchResponse = await fetch('/api/in-play', {
-          method: 'POST',
-          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: pending }),
-          cache: 'no-store'
-        });
-        const batchPayload = await batchResponse.json().catch(() => ({}));
-        if (batchResponse.status === 429 && batchPayload.scope !== 'daily' && retries < maxRetries) {
-          retries += 1;
-          const seconds = retryDelaySeconds(batchPayload.retryAfterSeconds);
-          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. ${describeInPlayLimit(batchPayload)} Retrying in ${seconds} seconds…`;
-          await sleepInPlay(seconds * 1000);
-          continue;
-        }
-        if (!batchResponse.ok) throw new Error(batchResponse.status === 429 ? describeInPlayLimit(batchPayload) : batchPayload.error || `Live service returned ${batchResponse.status}`);
-        if (!Array.isArray(batchPayload.results) || !Array.isArray(batchPayload.remainingIds)
-          || batchPayload.results.length + batchPayload.remainingIds.length !== pending.length) throw new Error('Invalid live batch response.');
-        for (const result of batchPayload.results) {
-          processed += 1;
-          if (!result.match) { unavailable += 1; continue; }
-          const match = result.match;
-          matches.push(rankInPlay(match, previousInplay.get(match.id)));
-          previousInplay.set(match.id, match);
-        }
-        renderInPlay(matches);
-        pending = batchPayload.remainingIds;
-        if (batchPayload.stopped?.reason === 'provider_auth') throw new Error('Provider credentials or subscription do not allow this request.');
-        if (batchPayload.stopped?.reason === 'rate_limit') {
-          if (batchPayload.stopped.scope === 'daily') throw new Error(describeInPlayLimit(batchPayload.stopped));
-          if (!pending.length && i + batchSize >= selected.length) break;
-          if (retries++ >= maxRetries) throw new Error(`${describeInPlayLimit(batchPayload.stopped)} Automatic retries exhausted.`);
-          const seconds = retryDelaySeconds(batchPayload.stopped.retryAfterSeconds);
-          inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. ${describeInPlayLimit(batchPayload.stopped)} Retrying in ${seconds} seconds…`;
-          await sleepInPlay(seconds * 1000);
-        } else if (pending.length) throw new Error('Live batch did not complete.');
+      const pending = selected.slice(i, i + batchSize);
+      const delay = Math.max(0, lastBatchStart + batchIntervalMs - Date.now());
+      if (delay) {
+        inplayStatus.textContent = `Screened ${processed} of ${selected.length} selected matches. Pausing ${Math.ceil(delay / 1000)} seconds to limit API traffic…`;
+        await sleepInPlay(delay);
       }
+      inplayStatus.textContent = `Screening ${processed} of ${selected.length} selected matches (${total} eligible)…`;
+      lastBatchStart = Date.now();
+      const batchResponse = await fetch('/api/in-play', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: pending }),
+        cache: 'no-store'
+      });
+      const batchPayload = await batchResponse.json().catch(() => ({}));
+      if (!batchResponse.ok) throw new Error(batchResponse.status === 429 ? describeInPlayLimit(batchPayload) : batchPayload.error || `Live service returned ${batchResponse.status}`);
+      if (!Array.isArray(batchPayload.results) || !Array.isArray(batchPayload.remainingIds)
+        || batchPayload.results.length + batchPayload.remainingIds.length !== pending.length) throw new Error('Invalid live batch response.');
+      for (const result of batchPayload.results) {
+        processed += 1;
+        if (!result.match) { unavailable += 1; continue; }
+        const match = result.match;
+        matches.push(rankInPlay(match, previousInplay.get(match.id)));
+        previousInplay.set(match.id, match);
+      }
+      renderInPlay(matches);
+      if (batchPayload.stopped?.reason === 'provider_auth') throw new Error('Provider credentials or subscription do not allow this request.');
+      if (batchPayload.stopped?.reason === 'rate_limit') {
+        throw new Error(describeInPlayLimit(batchPayload.stopped));
+      } else if (batchPayload.remainingIds.length) throw new Error('Live batch did not complete.');
     }
     inplayCursors = selection.cursors;
     inplayStatus.textContent = `Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${total - processed} not screened. ${total > processed ? 'Major leagues are prioritized; later sweeps rotate through overflow. ' : ''}Results are snapshots, not live updates.`;
   } catch (error) {
     renderInPlay(matches);
-    inplayStatus.textContent = `Sweep stopped: ${error.message} Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${Math.max(0, total - processed)} not screened.`;
+    inplayStatus.textContent = `Sweep stopped: ${error.message} Screened ${processed} of ${total} eligible matches · ${matches.length} ranked · ${unavailable} unavailable · ${Math.max(0, total - processed)} not screened. Press Refresh live sweep to try again.`;
   } finally {
     sweepInplayButton.disabled = false;
   }
@@ -505,9 +480,6 @@ function describeInPlayLimit(payload) {
   const scope = payload.scope === 'daily' ? 'daily limit' : payload.scope === 'minute' ? 'per-minute limit' : null;
   const state = (value) => ['available', 'exhausted'].includes(value) ? value : 'unknown';
   return `Provider rejected ${endpoint} (${scope ? `${scope}; ` : ''}${status}; daily allowance ${state(diagnostic.dailyQuota)}; per-minute allowance ${state(diagnostic.minuteQuota)}).`;
-}
-function retryDelaySeconds(value) {
-  return Number.isFinite(value) && value > 0 ? Math.min(300, Math.ceil(value)) : 60;
 }
 function sleepInPlay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function escapeHtml(value) {
